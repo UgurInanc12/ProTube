@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+*.egg-info/
+*.egg
+
+# Build
+build/
+dist/
+*.spec
+
+# Environment
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+.DS_Store
+
+# FFmpeg (downloaded at runtime)
+bin/
+ffmpeg.zip
+
+# Sessions and logs
+sessions/
+
+# Internal planning
+.hermes/
