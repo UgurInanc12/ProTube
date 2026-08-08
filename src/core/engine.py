@@ -3,10 +3,11 @@ import logging
 import os
 import sys
 import shutil
+import time
 from typing import Optional, Callable
 import yt_dlp
 from src.core.models import (
-    VideoInfo, FormatInfo, SubtitleInfo,
+    VideoInfo, FormatInfo, SubtitleInfo, TextTrackInfo,
     DownloadProgress, DownloadStatus,
 )
 
@@ -24,6 +25,7 @@ class VideoEngine:
 
     def __init__(self, progress_callback: Optional[Callable] = None):
         self.progress_callback = progress_callback
+        self.last_download_error = ""
 
     def _base_opts(self) -> dict:
         opts = {"quiet": True, "no_warnings": True}
@@ -68,8 +70,10 @@ class VideoEngine:
         # All failed - give clear instructions
         from src.core.session_manager import SessionManager
         cookies_path = SessionManager().base_dir / "cookies.txt"
+        detail = str(last_error)[:500] if last_error else "Unknown extraction error"
         raise RuntimeError(
-            f"YouTube requires sign-in for this video.\n\n"
+            f"Unable to fetch this video.\n\n"
+            f"Last error: {detail}\n\n"
             f"Quick fix (one-time, 30 seconds):\n"
             f"1. Open Chrome, go to youtube.com\n"
             f"2. Install extension: 'Get cookies.txt LOCALLY'\n"
@@ -81,6 +85,21 @@ class VideoEngine:
 
     # ── download ───────────────────────────────────────────────
 
+    def _download_once(self, opts: dict, url: str) -> None:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            ydl.download([url])
+
+    @staticmethod
+    def _is_transient_download_error(error: Exception) -> bool:
+        message = str(error).lower()
+        return any(marker in message for marker in (
+            "timed out", "timeout", "temporarily unavailable",
+            "connection reset", "connection aborted", "connection refused",
+            "network is unreachable", "http error 429", "http error 500",
+            "http error 502", "http error 503", "http error 504",
+            "temporary failure", "transient",
+        ))
+
     def download(
         self,
         url: str,
@@ -89,6 +108,8 @@ class VideoEngine:
         audio_format_id: Optional[str] = None,
         subtitle_lang: Optional[str] = None,
         embed_subs: bool = False,
+        text_track=None,
+        merge_output_format: Optional[str] = None,
     ) -> int:
         format_str = format_id
         if audio_format_id:
@@ -99,20 +120,31 @@ class VideoEngine:
         base_opts = self._base_opts()
         base_opts.update({
             "format": format_str,
+            "noplaylist": True,
             "outtmpl": output_template,
             "progress_hooks": [self._progress_hook] if self.progress_callback else [],
-            "writesubtitles": bool(subtitle_lang),
-            "subtitleslangs": [subtitle_lang] if subtitle_lang else [],
+            "writesubtitles": bool(subtitle_lang) or bool(text_track and not getattr(text_track, "is_auto", False)),
+            "writeautomaticsub": bool(text_track and getattr(text_track, "is_auto", False)),
+            "subtitleslangs": [subtitle_lang] if subtitle_lang else ([text_track.language] if text_track else []),
             "embedsubtitles": embed_subs,
-            "merge_output_format": "mp4",
+            "merge_output_format": merge_output_format or "mp4",
         })
 
+        last_error = None
         for strategy in self._get_strategies():
             try:
                 opts = dict(base_opts)
                 opts.update(strategy["opts"])
-                with yt_dlp.YoutubeDL(opts) as ydl:
-                    ydl.download([url])
+                for attempt in range(2):
+                    try:
+                        self._download_once(opts, url)
+                        break
+                    except Exception as error:
+                        if attempt == 0 and self._is_transient_download_error(error):
+                            log.warning(f"[{strategy['label']}] transient failure, retrying once: {str(error)[:150]}")
+                            time.sleep(1.0)
+                            continue
+                        raise
                 log.info(f"Download OK [{strategy['label']}]")
                 if self.progress_callback:
                     self.progress_callback(
@@ -120,8 +152,10 @@ class VideoEngine:
                     )
                 return 0
             except Exception as e:
+                last_error = e
                 log.warning(f"[{strategy['label']}] download failed: {str(e)[:150]}")
 
+        self.last_download_error = str(last_error) if last_error else "Unknown download error"
         if self.progress_callback:
             self.progress_callback(DownloadProgress(status=DownloadStatus.FAILED))
         return 1
@@ -153,6 +187,7 @@ class VideoEngine:
             "audio_formats": self._parse_audio_formats(info.get("formats", [])),
             "combined_formats": self._parse_combined_formats(info.get("formats", [])),
             "subtitles": self._parse_subtitles(info.get("subtitles", {})),
+            "automatic_captions": self._parse_text_tracks(info.get("automatic_captions", {})),
             "raw": info,
         }
 
@@ -185,9 +220,10 @@ class VideoEngine:
             resolution=f.get("resolution", "") or "",
             fps=f.get("fps"),
             codec=(f.get("vcodec") or f.get("acodec") or ""),
-            filesize=f.get("filesize"),
+            filesize=f.get("filesize") or f.get("filesize_approx"),
             tbr=f.get("tbr"), vbr=f.get("vbr"), abr=f.get("abr"),
-            format_note=f.get("format_note", ""),
+            format_note=f.get("format_note", "") or "",
+            dynamic_range=f.get("dynamic_range", "") or f.get("dynamic_range_info", "") or "",
             has_video=has_video, has_audio=has_audio,
         )
 
@@ -235,4 +271,21 @@ class VideoEngine:
                     language_name=lang_names.get(lang, lang.upper()),
                     ext=ext, is_auto=is_auto,
                 ))
+        return result
+
+    def _parse_text_tracks(self, tracks: dict) -> list[TextTrackInfo]:
+        result = []
+        lang_names = {
+            "en": "English", "tr": "Turkish", "de": "German",
+            "fr": "French", "es": "Spanish", "ja": "Japanese",
+        }
+        for lang, entries in tracks.items():
+            if not entries:
+                continue
+            result.append(TextTrackInfo(
+                language=lang,
+                language_name=lang_names.get(lang, lang.upper()),
+                ext=entries[0].get("ext", "vtt"),
+                is_auto=True,
+            ))
         return result

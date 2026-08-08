@@ -1,5 +1,6 @@
 """Tests for the yt-dlp engine wrapper."""
 from unittest.mock import patch, MagicMock
+import tempfile
 from src.core.engine import VideoEngine
 from src.core.models import DownloadStatus
 
@@ -127,6 +128,91 @@ class TestFetchMetadata:
         assert formats[1].format_id == "3"  # 720p second
         assert formats[2].format_id == "1"  # 360p last
 
+    @patch("src.core.engine.yt_dlp.YoutubeDL")
+    def test_fetch_parses_automatic_captions(self, mock_ydl_cls):
+        mock_ydl = MagicMock()
+        mock_ydl.extract_info.return_value = {
+            "id": "test", "title": "Test", "duration": 10,
+            "formats": [], "subtitles": {},
+            "automatic_captions": {
+                "en": [{"ext": "vtt"}], "tr": [{"ext": "srv3"}],
+            },
+        }
+        mock_ydl_cls.return_value.__enter__.return_value = mock_ydl
+
+        result = VideoEngine().fetch_metadata("url")
+
+        assert [track.language for track in result["automatic_captions"]] == ["en", "tr"]
+        assert result["automatic_captions"][0].is_auto is True
+
+    @patch("src.core.engine.yt_dlp.YoutubeDL")
+    def test_download_passes_audio_subtitle_and_transcript_options(self, mock_ydl_cls):
+        mock_ydl = MagicMock()
+        mock_ydl_cls.return_value.__enter__.return_value = mock_ydl
+        track = type("Track", (), {"language": "tr", "is_auto": True})()
+
+        result = VideoEngine().download(
+            "url", tempfile.gettempdir(), "137", audio_format_id="140",
+            subtitle_lang="en", text_track=track, merge_output_format="mp4",
+        )
+
+        assert result == 0
+        opts = mock_ydl_cls.call_args.args[0]
+        assert opts["format"] == "137+140"
+        assert opts["writesubtitles"] is True
+        assert opts["writeautomaticsub"] is True
+        assert opts["subtitleslangs"] == ["en"]
+        assert opts["merge_output_format"] == "mp4"
+
+    @patch("src.core.engine.yt_dlp.YoutubeDL")
+    def test_download_can_write_automatic_caption_track_when_selected(self, mock_ydl_cls):
+        mock_ydl = MagicMock()
+        mock_ydl_cls.return_value.__enter__.return_value = mock_ydl
+        track = type("Track", (), {"language": "tr", "is_auto": True})()
+
+        result = VideoEngine().download(
+            "url", tempfile.gettempdir(), "137", text_track=track,
+        )
+
+        assert result == 0
+        opts = mock_ydl_cls.call_args.args[0]
+        assert opts["writeautomaticsub"] is True
+        assert opts["subtitleslangs"] == ["tr"]
+
+    @patch("src.core.engine.yt_dlp.YoutubeDL")
+    def test_download_can_write_manual_subtitle_track_selected_as_text_asset(self, mock_ydl_cls):
+        mock_ydl = MagicMock()
+        mock_ydl_cls.return_value.__enter__.return_value = mock_ydl
+        track = type("Track", (), {"language": "en", "is_auto": False})()
+
+        result = VideoEngine().download(
+            "url", tempfile.gettempdir(), "137", text_track=track,
+        )
+
+        assert result == 0
+        opts = mock_ydl_cls.call_args.args[0]
+        assert opts["writesubtitles"] is True
+        assert opts["writeautomaticsub"] is False
+        assert opts["subtitleslangs"] == ["en"]
+
+    @patch("src.core.engine.yt_dlp.YoutubeDL")
+    def test_download_disables_playlist_expansion(self, mock_ydl_cls):
+        mock_ydl = MagicMock()
+        mock_ydl_cls.return_value.__enter__.return_value = mock_ydl
+
+        assert VideoEngine().download("url", tempfile.gettempdir(), "137") == 0
+        assert mock_ydl_cls.call_args.args[0]["noplaylist"] is True
+
+    @patch("src.core.engine.yt_dlp.YoutubeDL")
+    def test_failed_download_preserves_last_error(self, mock_ydl_cls):
+        mock_ydl = MagicMock()
+        mock_ydl.download.side_effect = RuntimeError("HTTP Error 503: Service Unavailable")
+        mock_ydl_cls.return_value.__enter__.return_value = mock_ydl
+
+        engine = VideoEngine()
+        assert engine.download("url", tempfile.gettempdir(), "137") == 1
+        assert "503" in engine.last_download_error
+
 
 class TestProgressHook:
     def test_progress_callback_receives_updates(self):
@@ -163,3 +249,27 @@ class TestProgressHook:
         assert len(callback_data) == 1
         assert callback_data[0].status == DownloadStatus.PROCESSING
         assert callback_data[0].percent == 100.0
+
+
+class TestDownloadRetry:
+    @patch("src.core.engine.time.sleep")
+    @patch("src.core.engine.yt_dlp.YoutubeDL")
+    def test_transient_first_attempt_is_retried_before_auth_strategies(self, mock_ydl_cls, mock_sleep):
+        attempts = []
+        ydl = MagicMock()
+
+        def download(_urls):
+            attempts.append(1)
+            if len(attempts) == 1:
+                raise RuntimeError("transient network failure")
+
+        ydl.download.side_effect = download
+        mock_ydl_cls.return_value.__enter__.return_value = ydl
+
+        result = VideoEngine().download(
+            "https://example.com/video", tempfile.gettempdir(), "137"
+        )
+
+        assert result == 0
+        assert len(attempts) == 2
+        mock_sleep.assert_called_once()

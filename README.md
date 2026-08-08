@@ -6,13 +6,17 @@ Single EXE, no installation required. Download videos, convert formats, extract 
 
 ## Features
 
-- **Download**: Paste any YouTube URL, see all available formats (resolution, FPS, codec, filesize), pick your quality, download
-- **Convert**: Transcode downloaded videos to MP4, MKV, AVI, WebM, MOV with custom bitrate. GPU acceleration (NVIDIA NVENC, AMD AMF, Intel QSV) when available
+- **Download**: Paste any YouTube URL, group available video formats by resolution and FPS, then choose a codec, dynamic range, container, and audio policy
+- **Audio pairing**: Automatically pair a compatible audio stream with video-only formats, select a specific audio track, or download video without audio
+- **Text tracks**: Choose manual subtitles or automatic captions/transcripts as an additional file when the source provides them
+- **Convert**: Transcode downloaded videos to MP4, MKV, AVI, WebM, or MOV with custom bitrate. GPU acceleration (NVIDIA NVENC, AMD AMF, Intel QSV) is available when supported
 - **Extract Audio**: Pull audio tracks as MP3, AAC, WAV, OGG, M4A
 - **Subtitle support**: Download and embed subtitles in any language
 - **Session management**: Each download creates a session folder. Browse, convert, and extract from past downloads
 - **Real progress**: FFmpeg progress parsing shows actual encoding percentage
 - **Cancel support**: Stop any operation mid-process
+- **Retry handling**: Retry transient download failures once and preserve the final error detail for troubleshooting
+- **Session handoff**: Open the Convert tab directly on the session that just finished downloading
 
 ## Requirements
 
@@ -22,7 +26,7 @@ Single EXE, no installation required. Download videos, convert formats, extract 
 
 ## Quick Start
 
-Download `ProTube.exe` from [Releases](../../releases), double-click to run.
+Download `ProTube.exe` from the [UgurInanc12/ProTube releases](https://github.com/UgurInanc12/ProTube/releases), then double-click to run.
 
 ## Development
 
@@ -57,6 +61,7 @@ src/
   app.py                     # Application controller, theme, FFmpeg check
   core/
     engine.py                # yt-dlp wrapper with multi-strategy auth
+    download_options.py      # Audio pairing and container compatibility rules
     models.py                # Dataclasses: VideoInfo, FormatInfo, etc.
     session_manager.py       # Session persistence, file organization
     transcoder.py            # FFmpeg transcode orchestration
@@ -65,6 +70,7 @@ src/
     url_bar.py               # URL input with fetch button
     video_info.py            # Thumbnail, title, channel, duration display
     format_selector.py       # Format selection with tabs (video/audio/subtitles)
+    format_options.py        # Resolution grouping, codec labels, HDR, and text tracks
     convert_panel.py         # Convert tab: session list + GPU/codec/bitrate controls
     audio_panel.py           # Audio tab: session list + format selection
     session_list.py          # Reusable session sidebar with double-click Explorer
@@ -91,6 +97,12 @@ YouTube sometimes requires sign-in to verify you're not a bot. ProTube tries mul
 4. `cookies.txt` file (if placed in sessions directory)
 
 For persistent auth issues, install the "Get cookies.txt LOCALLY" Chrome extension, export cookies from youtube.com, and save to `ProTube Sessions/cookies.txt`.
+
+## Premiere Pro Compatibility
+
+For the safest Premiere Pro workflow, convert downloaded WebM/VP9/Opus or AV1 media to H.264 MP4 with AAC audio. H.264 MP4 is the default compatibility target. HEVC MP4 can be useful for smaller files, but support depends on the installed Premiere Pro version, Windows codecs, and hardware decoding support. The Convert tab also exposes other formats for workflows that do not require maximum Premiere compatibility.
+
+The current release organizes format selection and download assets, while vendor-specific quality policies and stricter Premiere-oriented FFmpeg flags are being developed separately.
 
 ## License
 

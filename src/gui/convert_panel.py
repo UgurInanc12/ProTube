@@ -245,6 +245,10 @@ class ConvertPanel(ctk.CTkFrame):
     def on_tab_activated(self):
         self.refresh_sessions()
 
+    def select_session(self, folder_name: str):
+        """Select a session after the sidebar has been refreshed."""
+        self.session_list.select(folder_name)
+
     def _on_session_select(self, folder_name: str):
         self._current_folder = folder_name
         self._clear_preview()

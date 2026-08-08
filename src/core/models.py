@@ -54,6 +54,7 @@ class FormatInfo:
     format_note: str = ""  # e.g. "1080p", "720p60"
     has_video: bool = True
     has_audio: bool = True
+    dynamic_range: str = ""  # e.g. "SDR", "HDR10", "PQ", "HLG", "Dolby Vision"
 
     @property
     def resolution_short(self) -> str:
@@ -80,6 +81,18 @@ class FormatInfo:
             parts.append(self.codec.upper())
         return " ".join(parts) or self.format_id
 
+    @property
+    def is_hdr(self) -> bool:
+        """Whether this format carries HDR or another high dynamic range signal."""
+        value = (self.dynamic_range or "").strip().lower()
+        if value in {"sdr", "standard", "unknown"}:
+            return False
+        if value:
+            return True
+        note = (self.format_note or "").lower()
+        words = set(note.replace("/", " ").replace("-", " ").split())
+        return any(marker in note for marker in ("hdr", "pq", "hlg", "dolby vision")) or "dv" in words
+
 
 @dataclass
 class SubtitleInfo:
@@ -95,6 +108,22 @@ class SubtitleInfo:
         name = self.language_name or self.language
         suffix = " (auto)" if self.is_auto else ""
         return f"{name}{suffix}"
+
+
+@dataclass
+class TextTrackInfo:
+    """Represents a subtitle or transcript track available from the source."""
+
+    language: str
+    language_name: str = ""
+    ext: str = "vtt"
+    is_auto: bool = False
+
+    @property
+    def label(self) -> str:
+        name = self.language_name or self.language
+        suffix = " (auto)" if self.is_auto else ""
+        return f"{name}{suffix} · .{self.ext}"
 
 
 @dataclass

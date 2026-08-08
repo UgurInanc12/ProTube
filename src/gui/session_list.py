@@ -74,6 +74,11 @@ class SessionList(ctk.CTkScrollableFrame):
             self._buttons[folder_name].configure(fg_color="#1a73e8")
         self.on_select(folder_name)
 
+    def select(self, folder_name: str):
+        """Programmatically select a visible session."""
+        if folder_name in self._buttons:
+            self._select(folder_name)
+
     def _open_in_explorer(self, file_path: str, folder_name: str):
         """Open the session folder or file location in Windows Explorer."""
         if file_path and os.path.exists(file_path):

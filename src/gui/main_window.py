@@ -6,6 +6,12 @@ import threading
 import customtkinter as ctk
 from threading import Thread
 from src.core.engine import VideoEngine
+from src.core.download_options import (
+    audio_format_by_id,
+    resolve_audio_format_id,
+    resolve_merge_format,
+    video_format_by_id,
+)
 from src.core.models import DownloadProgress, DownloadStatus, SessionState
 from src.core.session_manager import SessionManager, SessionRecord
 from src.gui.url_bar import URLBar
@@ -28,6 +34,9 @@ class MainWindow(ctk.CTkFrame):
         log.info(f"Loaded {len(self.sm._records)} existing sessions")
         self._current_metadata = None
         self._status_label = None
+        self._download_result_visible = False
+        self._download_error = ""
+        self._pending_session_folder = ""
         self._build()
 
     def _build(self):
@@ -110,8 +119,52 @@ class MainWindow(ctk.CTkFrame):
             fg_color="#2e7d32", hover_color="#1b5e20",
         )
 
+    def _show_download_success(self, filename: str, folder_name: str = ""):
+        """Show the green post-download shortcut."""
+        self._download_error = ""
+        self._pending_session_folder = folder_name or getattr(self, "_pending_session_folder", "")
+        self._download_result_visible = True
+        self.go_convert_btn.configure(
+            text="✅ Download Complete. Open in Convert Tab →",
+            fg_color="#2e7d32", hover_color="#1b5e20", state="normal",
+            command=self._go_to_convert_tab,
+        )
+        self.go_convert_btn.grid(row=4, column=0, padx=10, pady=(0, 15))
+
+    def _show_download_failure(self, error: str = ""):
+        """Replace the shortcut with a clear, disabled failure indicator."""
+        self._download_error = error
+        self._download_result_visible = True
+        self.go_convert_btn.configure(
+            text="❌ DOWNLOAD FAILED!!!",
+            fg_color="#b71c1c", hover_color="#8e0000", state="normal",
+            command=self._on_download_failure_clicked,
+        )
+        self.go_convert_btn.grid(row=4, column=0, padx=10, pady=(0, 15))
+
+    def _on_download_failure_clicked(self):
+        """Show the preserved failure detail when the red status button is clicked."""
+        self._show_error(self._download_error or "The download did not complete.")
+
+    def _hide_download_result(self):
+        """Hide the result shortcut when Download is no longer active."""
+        if self._download_result_visible:
+            self.go_convert_btn.grid_forget()
+            self._download_result_visible = False
+
+    def _reset_download_result(self):
+        """Clear a previous success or failure state before a new fetch/download."""
+        self._download_error = ""
+        self._hide_download_result()
+        self.go_convert_btn.configure(
+            text="✅ Download Complete. Open in Convert Tab →",
+            fg_color="#2e7d32", hover_color="#1b5e20", state="normal",
+            command=self._go_to_convert_tab,
+        )
+
     def _on_fetch(self, url: str):
         """Fetch video metadata in background."""
+        self._reset_download_result()
         self._status("Fetching video metadata...")
 
         def fetch():
@@ -134,6 +187,7 @@ class MainWindow(ctk.CTkFrame):
 
     def _display_metadata(self, data: dict):
         """Show fetched metadata and format selector."""
+        self._hide_download_result()
         self._current_metadata = data
         video = data["video"]
 
@@ -147,6 +201,7 @@ class MainWindow(ctk.CTkFrame):
             audio_formats=data["audio_formats"],
             combined_formats=data["combined_formats"],
             subtitles=data["subtitles"],
+            automatic_captions=data.get("automatic_captions", []),
         )
         self.format_selector.grid(row=2, column=0, sticky="nsew", padx=10, pady=5)
 
@@ -165,6 +220,7 @@ class MainWindow(ctk.CTkFrame):
         if not self._current_metadata:
             return
 
+        self._hide_download_result()
         selections = self.format_selector.get_selections()
         video_fmt_id = selections["video_format"]
         if not video_fmt_id:
@@ -172,7 +228,26 @@ class MainWindow(ctk.CTkFrame):
             return
 
         video = self._current_metadata["video"]
+        all_video_formats = (
+            self._current_metadata["video_formats"]
+            + self._current_metadata["combined_formats"]
+        )
+        selected_video = video_format_by_id(all_video_formats, video_fmt_id)
+        if selected_video is None:
+            self._show_error("The selected video format is no longer available. Fetch the video again.")
+            return
+        audio_fmt_id = resolve_audio_format_id(
+            selected_video,
+            selections.get("audio_mode", "auto"),
+            selections.get("audio_format"),
+            self._current_metadata["audio_formats"],
+        )
+        selected_audio = audio_format_by_id(
+            self._current_metadata["audio_formats"], audio_fmt_id
+        )
+        merge_format = resolve_merge_format(selected_video, selected_audio)
         folder_name = self.sm.create_session(video.id, video.title, video.url)
+        self._pending_session_folder = folder_name
         output_dir = str(self.sm.session_dir(folder_name))
         log.info(f"Download session: '{folder_name}' -> {output_dir}")
 
@@ -197,8 +272,10 @@ class MainWindow(ctk.CTkFrame):
             result = engine.download(
                 url=video.url, output_dir=output_dir,
                 format_id=video_fmt_id,
-                audio_format_id=selections["audio_format"],
+                audio_format_id=audio_fmt_id,
                 subtitle_lang=selections["subtitle_lang"],
+                merge_output_format=merge_format,
+                text_track=selections.get("text_track"),
                 embed_subs=False,
             )
 
@@ -211,22 +288,30 @@ class MainWindow(ctk.CTkFrame):
             if result == 0:
                 downloaded = self._find_downloaded(output_dir)
                 if downloaded:
+                    subtitle_file = self._find_subtitle_file(output_dir)
                     rec = SessionRecord(
                         video_id=video.id, title=video.title, url=video.url,
                         downloaded_file=downloaded, video_format=video_fmt_id,
-                        audio_format=selections["audio_format"] or "",
+                        subtitles_file=subtitle_file,
+                        audio_format=audio_fmt_id or "",
                     )
                     self.sm.record_download(folder_name, rec)
+                    self._pending_session_folder = folder_name
                     self.after(0, lambda: self._status(
                         f"✅ Downloaded: {os.path.basename(downloaded)}"
                     ))
-                    self.after(0, lambda: self.go_convert_btn.grid(
-                        row=4, column=0, padx=10, pady=(0, 15)
-                    ))
+                    self.after(0, lambda name=os.path.basename(downloaded), folder=folder_name: self._show_download_success(name, folder))
                 else:
-                    self.after(0, lambda: self._status("✅ Download complete"))
+                    self.after(0, lambda: self._status("❌ Download failed: no output file was found"))
+                    self.after(0, lambda: self._show_download_failure(
+                        "The download engine completed without producing an output file."
+                    ))
             else:
+                error_detail = engine.last_download_error
                 self.after(0, lambda: self._status("❌ Download failed"))
+                self.after(0, lambda detail=error_detail: self._show_download_failure(
+                    f"{detail}\n\nCheck the log file for the full details."
+                ))
 
             self.after(0, lambda: self.dl_cancel_btn.configure(state="disabled"))
             self.after(0, lambda: self.download_btn.configure(state="normal", text="⬇ Download"))
@@ -241,10 +326,21 @@ class MainWindow(ctk.CTkFrame):
 
     def _find_downloaded(self, directory: str) -> str:
         files = glob.glob(os.path.join(directory, "*"))
-        files = [f for f in files if os.path.isfile(f)]
+        sidecar_exts = {".vtt", ".srt", ".ass", ".lrc", ".json", ".part", ".ytdl"}
+        files = [
+            f for f in files
+            if os.path.isfile(f) and os.path.splitext(f)[1].lower() not in sidecar_exts
+        ]
         if not files:
             return ""
         return max(files, key=os.path.getctime)
+
+    def _find_subtitle_file(self, directory: str) -> str:
+        files = [
+            f for f in glob.glob(os.path.join(directory, "*"))
+            if os.path.isfile(f) and os.path.splitext(f)[1].lower() in {".vtt", ".srt", ".ass"}
+        ]
+        return max(files, key=os.path.getctime) if files else ""
 
     # ═══════════════════════════════════════════════════════════════
     # CONVERT TAB
@@ -274,6 +370,8 @@ class MainWindow(ctk.CTkFrame):
         """Refresh session lists when switching tabs."""
         current = self.tabview.get()
         log.debug(f"Tab switched to: {current}")
+        if current != "Download":
+            self._hide_download_result()
         if current == "Convert":
             self.convert_panel.on_tab_activated()
         elif current == "Extract Audio":
@@ -281,8 +379,12 @@ class MainWindow(ctk.CTkFrame):
 
     def _go_to_convert_tab(self):
         """Switch to Convert tab (called from download complete button)."""
+        self._hide_download_result()
         self.tabview.set("Convert")
         self.convert_panel.on_tab_activated()
+        pending_folder = getattr(self, "_pending_session_folder", "")
+        if pending_folder:
+            self.after(50, lambda folder=pending_folder: self.convert_panel.select_session(folder))
 
     # ═══════════════════════════════════════════════════════════════
     # HELPERS
