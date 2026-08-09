@@ -189,42 +189,117 @@ class FFmpegManager:
         audio_bitrate: str = "",
         crf: int = 23,
         resolution: str = "",
-        fps: int = 0,
+        fps: float = 0,
         gpu_device: str = "",
+        premiere_compatible: bool = True,
+        source_is_hdr: bool = False,
+        color_primaries: str = "",
+        color_trc: str = "",
+        colorspace: str = "",
     ) -> list[str]:
-        """Build an FFmpeg transcode command with optional GPU acceleration.
-
-        Args:
-            gpu_device: 'nvidia', 'amd', 'intel', or '' for software.
-        """
+        """Build a quality-focused, bitrate-bounded FFmpeg transcode command."""
         cmd = [self._ffmpeg_path, "-y"]
-
-        # GPU hardware acceleration input
-        hwaccel_map = {"nvidia": "cuda", "amd": "d3d11va", "intel": "qsv"}
-        if gpu_device and gpu_device in hwaccel_map:
-            cmd += ["-hwaccel", hwaccel_map[gpu_device]]
-
+        codec = (video_codec or "").lower()
+        gpu = (gpu_device or "").lower()
+        is_gpu_encoder = codec.endswith("_nvenc") or codec.endswith("_amf") or codec.endswith("_qsv")
+        target_bitrate = bool(video_bitrate)
+        effective_audio_bitrate = audio_bitrate or (
+            "320k" if premiere_compatible and audio_codec == "aac" else ""
+        )
+        if gpu in {"nvidia", "amd", "intel"}:
+            hwaccel = {"nvidia": "cuda", "amd": "d3d11va", "intel": "qsv"}[gpu]
+            cmd += ["-hwaccel", hwaccel]
         cmd += ["-i", input_path]
 
         if video_codec:
             cmd += ["-c:v", video_codec]
         if audio_codec:
             cmd += ["-c:a", audio_codec]
-        if video_bitrate:
-            cmd += ["-b:v", video_bitrate]
-        if audio_bitrate:
-            cmd += ["-b:a", audio_bitrate]
-        if crf >= 0:
+
+        if is_gpu_encoder and target_bitrate:
+            maxrate = self._scale_bitrate(video_bitrate, 1.5)
+            bufsize = self._scale_bitrate(video_bitrate, 2.0)
+            if gpu == "nvidia":
+                tune = "hq" if codec.startswith("h264_") else "uhq"
+                cmd += ["-preset", "p7", "-tune", tune, "-rc", "vbr"]
+                cmd += ["-multipass", "fullres", "-rc-lookahead", "32"]
+                cmd += ["-spatial-aq", "1", "-temporal-aq", "1", "-aq-strength", "8"]
+                cmd += ["-bf", "3", "-b_ref_mode", "middle"]
+            elif gpu == "amd":
+                cmd += ["-usage", "high_quality", "-quality", "high_quality", "-rc", "vbr_peak"]
+                cmd += ["-preanalysis", "1", "-pa_lookahead_buffer_depth", "40"]
+                cmd += ["-pa_paq_mode", "1", "-pa_taq_mode", "2", "-vbaq", "1"]
+                if codec.startswith("h264_") or codec.startswith("hevc_"):
+                    cmd += ["-bf", "2"]
+            else:
+                cmd += ["-preset", "veryslow", "-extbrc", "1", "-adaptive_i", "1", "-adaptive_b", "1"]
+                if codec.startswith("h264_"):
+                    cmd += ["-look_ahead", "1"]
+                cmd += ["-look_ahead_depth", "40"]
+                if codec.startswith("h264_") or codec.startswith("hevc_"):
+                    cmd += ["-bf", "2"]
+            cmd += ["-b:v", video_bitrate, "-maxrate", maxrate, "-bufsize", bufsize]
+        elif is_gpu_encoder and not target_bitrate:
+            if gpu == "nvidia":
+                tune = "hq" if codec.startswith("h264_") else "uhq"
+                cq = "19" if codec.startswith("h264_") else ("21" if codec.startswith("hevc_") else "23")
+                cmd += ["-preset", "p7", "-tune", tune, "-rc", "vbr", "-cq", cq]
+                cmd += ["-multipass", "fullres", "-rc-lookahead", "32", "-spatial-aq", "1", "-temporal-aq", "1"]
+            elif gpu == "amd":
+                quality = "19" if codec.startswith("h264_") else ("21" if codec.startswith("hevc_") else "23")
+                cmd += ["-usage", "high_quality", "-quality", "high_quality", "-rc", "qvbr", "-qvbr_quality_level", quality]
+            else:
+                quality = "20" if codec.startswith("h264_") else ("21" if codec.startswith("hevc_") else "23")
+                cmd += ["-preset", "veryslow", "-global_quality", quality, "-extbrc", "1"]
+                if codec.startswith("h264_"):
+                    cmd += ["-look_ahead", "1"]
+                cmd += ["-look_ahead_depth", "40"]
+        elif video_bitrate:
+            cmd += ["-b:v", video_bitrate, "-maxrate", self._scale_bitrate(video_bitrate, 1.5), "-bufsize", self._scale_bitrate(video_bitrate, 2.0)]
+        elif crf >= 0:
             cmd += ["-crf", str(crf)]
+
+        if premiere_compatible and video_codec and output_path.lower().endswith((".mp4", ".mov")):
+            if codec.startswith("h264_") or codec == "libx264":
+                cmd += ["-profile:v", "high", "-pix_fmt", "yuv420p"]
+            elif codec.startswith("hevc_") or codec == "libx265":
+                cmd += ["-profile:v", "main10" if source_is_hdr else "main", "-pix_fmt", "p010le" if source_is_hdr else "yuv420p", "-tag:v", "hvc1"]
+            if fps > 0:
+                fps_value = float(fps)
+                gop = max(1, int(round(fps_value * 2)))
+                fps_text = f"{fps_value:g}"
+                cmd += ["-fps_mode", "cfr", "-r", fps_text, "-g", str(gop), "-keyint_min", str(gop), "-flags", "+cgop"]
+            if audio_codec == "aac":
+                cmd += ["-profile:a", "aac_low", "-ar", "48000", "-ac", "2"]
+
+        if color_primaries:
+            cmd += ["-color_primaries", color_primaries]
+        if color_trc:
+            cmd += ["-color_trc", color_trc]
+        if colorspace:
+            cmd += ["-colorspace", colorspace]
+        if effective_audio_bitrate:
+            cmd += ["-b:a", effective_audio_bitrate]
         if resolution:
             cmd += ["-vf", f"scale={resolution}"]
-        if fps > 0:
-            cmd += ["-r", str(fps)]
-        if output_path.endswith(".mp4"):
+        if fps > 0 and not premiere_compatible:
+            cmd += ["-r", f"{float(fps):g}"]
+        if output_path.lower().endswith((".mp4", ".mov")):
             cmd += ["-movflags", "+faststart"]
-
         cmd.append(output_path)
         return cmd
+
+    @staticmethod
+    def _scale_bitrate(value: str, multiplier: float) -> str:
+        """Scale a bitrate string such as 20M or 2500k without floating suffixes."""
+        match = re.fullmatch(r"\s*([0-9]+(?:\.[0-9]+)?)\s*([kKmMgG])?\s*", value)
+        if not match:
+            return value
+        number = float(match.group(1)) * multiplier
+        suffix = (match.group(2) or "").upper()
+        if suffix:
+            return f"{number:g}{suffix}"
+        return str(int(round(number)))
 
     def build_audio_extract_command(
         self, input_path: str, output_path: str, format: str = "mp3",

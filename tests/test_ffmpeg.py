@@ -85,6 +85,194 @@ class TestCommandBuilding:
         assert "-b:a" in cmd
         assert "192k" in cmd
 
+    def test_nvidia_h264_target_bitrate_uses_quality_policy_without_crf(self):
+        mgr = FFmpegManager()
+        mgr._ffmpeg_path = "ffmpeg"
+
+        cmd = mgr.build_transcode_command(
+            input_path="in.mp4",
+            output_path="out.mp4",
+            video_codec="h264_nvenc",
+            audio_codec="aac",
+            video_bitrate="20M",
+            fps=60,
+            gpu_device="nvidia",
+            premiere_compatible=True,
+        )
+
+        assert cmd[cmd.index("-preset") + 1] == "p7"
+        assert cmd[cmd.index("-tune") + 1] == "hq"
+        assert cmd[cmd.index("-rc") + 1] == "vbr"
+        assert cmd[cmd.index("-b:v") + 1] == "20M"
+        assert cmd[cmd.index("-maxrate") + 1] == "30M"
+        assert cmd[cmd.index("-bufsize") + 1] == "40M"
+        assert cmd[cmd.index("-multipass") + 1] == "fullres"
+        assert cmd[cmd.index("-rc-lookahead") + 1] == "32"
+        assert "-spatial-aq" in cmd and "-temporal-aq" in cmd
+        assert "-crf" not in cmd
+        assert cmd[cmd.index("-profile:v") + 1] == "high"
+        assert cmd[cmd.index("-pix_fmt") + 1] == "yuv420p"
+        assert cmd[cmd.index("-b:a") + 1] == "320k"
+        assert cmd[cmd.index("-ar") + 1] == "48000"
+        assert cmd[cmd.index("-ac") + 1] == "2"
+
+    def test_nvidia_hevc_uses_uhq_tune(self):
+        mgr = FFmpegManager()
+        mgr._ffmpeg_path = "ffmpeg"
+
+        cmd = mgr.build_transcode_command(
+            input_path="in.mp4",
+            output_path="out.mp4",
+            video_codec="hevc_nvenc",
+            video_bitrate="20M",
+            gpu_device="nvidia",
+        )
+
+        assert cmd[cmd.index("-tune") + 1] == "uhq"
+        assert "-cq" not in cmd
+        assert cmd[cmd.index("-b:v") + 1] == "20M"
+
+    def test_amd_hevc_target_bitrate_uses_amf_quality_options(self):
+        mgr = FFmpegManager()
+        mgr._ffmpeg_path = "ffmpeg"
+
+        cmd = mgr.build_transcode_command(
+            input_path="in.mp4",
+            output_path="out.mp4",
+            video_codec="hevc_amf",
+            video_bitrate="20M",
+            gpu_device="amd",
+            premiere_compatible=True,
+        )
+
+        assert cmd[cmd.index("-usage") + 1] == "high_quality"
+        assert cmd[cmd.index("-quality") + 1] == "high_quality"
+        assert cmd[cmd.index("-rc") + 1] == "vbr_peak"
+        assert cmd[cmd.index("-b:v") + 1] == "20M"
+        assert cmd[cmd.index("-maxrate") + 1] == "30M"
+        assert cmd[cmd.index("-bufsize") + 1] == "40M"
+        assert "-preanalysis" in cmd
+        assert "-vbaq" in cmd
+        assert "-crf" not in cmd
+        assert cmd[cmd.index("-tag:v") + 1] == "hvc1"
+
+    def test_intel_qsv_target_bitrate_uses_veryslow_and_extended_brc(self):
+        mgr = FFmpegManager()
+        mgr._ffmpeg_path = "ffmpeg"
+
+        cmd = mgr.build_transcode_command(
+            input_path="in.mp4",
+            output_path="out.mp4",
+            video_codec="h264_qsv",
+            video_bitrate="20M",
+            gpu_device="intel",
+            premiere_compatible=True,
+        )
+
+        assert cmd[cmd.index("-preset") + 1] == "veryslow"
+        assert cmd[cmd.index("-b:v") + 1] == "20M"
+        assert cmd[cmd.index("-maxrate") + 1] == "30M"
+        assert cmd[cmd.index("-bufsize") + 1] == "40M"
+        assert cmd[cmd.index("-extbrc") + 1] == "1"
+        assert cmd[cmd.index("-look_ahead") + 1] == "1"
+        assert cmd[cmd.index("-look_ahead_depth") + 1] == "40"
+        assert "-crf" not in cmd
+
+    def test_intel_qsv_hevc_uses_depth_without_h264_only_look_ahead_switch(self):
+        mgr = FFmpegManager()
+        mgr._ffmpeg_path = "ffmpeg"
+
+        cmd = mgr.build_transcode_command(
+            input_path="in.mp4",
+            output_path="out.mp4",
+            video_codec="hevc_qsv",
+            video_bitrate="20M",
+            gpu_device="intel",
+        )
+
+        assert "-look_ahead" not in cmd
+        assert cmd[cmd.index("-look_ahead_depth") + 1] == "40"
+
+    def test_premiere_flags_are_not_forced_on_non_mp4_outputs(self):
+        mgr = FFmpegManager()
+        mgr._ffmpeg_path = "ffmpeg"
+
+        cmd = mgr.build_transcode_command(
+            input_path="in.mp4",
+            output_path="out.mkv",
+            video_codec="hevc_nvenc",
+            video_bitrate="20M",
+            gpu_device="nvidia",
+            fps=30,
+            premiere_compatible=False,
+        )
+
+        assert "-tag:v" not in cmd
+        assert "-fps_mode" not in cmd
+        assert "-movflags" not in cmd
+
+    def test_premiere_profile_flags_apply_to_mov_output(self):
+        mgr = FFmpegManager()
+        mgr._ffmpeg_path = "ffmpeg"
+
+        cmd = mgr.build_transcode_command(
+            input_path="in.mp4",
+            output_path="out.mov",
+            video_codec="h264_nvenc",
+            video_bitrate="20M",
+            gpu_device="nvidia",
+            fps=30,
+            premiere_compatible=True,
+        )
+
+        assert cmd[cmd.index("-profile:v") + 1] == "high"
+        assert cmd[cmd.index("-fps_mode") + 1] == "cfr"
+
+    def test_premiere_hevc_hdr_uses_main10_and_preserves_color_metadata(self):
+        mgr = FFmpegManager()
+        mgr._ffmpeg_path = "ffmpeg"
+
+        cmd = mgr.build_transcode_command(
+            input_path="in.mp4",
+            output_path="out.mp4",
+            video_codec="hevc_nvenc",
+            video_bitrate="15M",
+            gpu_device="nvidia",
+            fps=30,
+            premiere_compatible=True,
+            source_is_hdr=True,
+            color_primaries="bt2020",
+            color_trc="smpte2084",
+            colorspace="bt2020nc",
+        )
+
+        assert cmd[cmd.index("-profile:v") + 1] == "main10"
+        assert cmd[cmd.index("-pix_fmt") + 1] == "p010le"
+        assert cmd[cmd.index("-tag:v") + 1] == "hvc1"
+        assert cmd[cmd.index("-color_primaries") + 1] == "bt2020"
+        assert cmd[cmd.index("-color_trc") + 1] == "smpte2084"
+        assert cmd[cmd.index("-colorspace") + 1] == "bt2020nc"
+        assert cmd[cmd.index("-fps_mode") + 1] == "cfr"
+        assert cmd[cmd.index("-g") + 1] == "60"
+        assert cmd[cmd.index("-keyint_min") + 1] == "60"
+
+    def test_software_target_bitrate_does_not_mix_crf_with_vbv(self):
+        mgr = FFmpegManager()
+        mgr._ffmpeg_path = "ffmpeg"
+
+        cmd = mgr.build_transcode_command(
+            input_path="in.mp4",
+            output_path="out.mp4",
+            video_codec="libx264",
+            video_bitrate="5M",
+            crf=23,
+        )
+
+        assert "-b:v" in cmd
+        assert "-maxrate" in cmd
+        assert "-bufsize" in cmd
+        assert "-crf" not in cmd
+
     def test_build_transcode_with_resolution(self):
         mgr = FFmpegManager()
         mgr._ffmpeg_path = "ffmpeg"
@@ -111,6 +299,23 @@ class TestCommandBuilding:
         assert "-r" in cmd
         assert "60" in cmd
 
+    def test_premiere_cfr_preserves_fractional_frame_rate(self):
+        mgr = FFmpegManager()
+        mgr._ffmpeg_path = "ffmpeg"
+
+        cmd = mgr.build_transcode_command(
+            input_path="in.mp4",
+            output_path="out.mp4",
+            video_codec="h264_nvenc",
+            video_bitrate="20M",
+            gpu_device="nvidia",
+            fps=29.97,
+            premiere_compatible=True,
+        )
+
+        assert cmd[cmd.index("-r") + 1] == "29.97"
+        assert cmd[cmd.index("-g") + 1] == "60"
+
     def test_build_transcode_no_faststart_for_mkv(self):
         mgr = FFmpegManager()
         mgr._ffmpeg_path = "ffmpeg"
@@ -121,6 +326,11 @@ class TestCommandBuilding:
         )
 
         assert "+faststart" not in cmd
+
+    def test_bitrate_scaling_preserves_units(self):
+        assert FFmpegManager._scale_bitrate("20M", 1.5) == "30M"
+        assert FFmpegManager._scale_bitrate("2500k", 2.0) == "5000K"
+        assert FFmpegManager._scale_bitrate("8000000", 1.5) == "12000000"
 
     def test_build_audio_extract_mp3(self):
         mgr = FFmpegManager()

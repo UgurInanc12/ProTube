@@ -23,6 +23,11 @@ class ConvertPanel(ctk.CTkFrame):
         self._current_folder: str = ""
         self._current_file: str = ""
         self._source_bitrate: int = 0
+        self._source_fps: float = 0.0
+        self._source_is_hdr: bool = False
+        self._source_color_primaries: str = ""
+        self._source_color_trc: str = ""
+        self._source_colorspace: str = ""
         self._thumbnail_label: ctk.CTkLabel | None = None
         self._thumbnail_img = None
         self._build()
@@ -260,6 +265,11 @@ class ConvertPanel(ctk.CTkFrame):
             info = self.transcoder.get_video_info(rec.downloaded_file)
             res = ""
             source_br = 0
+            source_fps = 0.0
+            source_is_hdr = False
+            color_primaries = ""
+            color_trc = ""
+            colorspace = ""
             if info:
                 vs = next((s for s in info.get("streams", [])
                            if s.get("codec_type") == "video"), {})
@@ -272,7 +282,20 @@ class ConvertPanel(ctk.CTkFrame):
                     source_br = int(float(br_str))
                 except (ValueError, TypeError):
                     source_br = 0
+                try:
+                    source_fps = float(vs.get("avg_frame_rate", "0/1").split("/")[0]) / float(vs.get("avg_frame_rate", "0/1").split("/")[1])
+                except (ValueError, TypeError, ZeroDivisionError, IndexError):
+                    source_fps = float(vs.get("r_frame_rate", 0) or 0)
+                color_primaries = vs.get("color_primaries", "") or ""
+                color_trc = vs.get("color_transfer", "") or ""
+                colorspace = vs.get("colorspace", "") or ""
+                source_is_hdr = color_trc in {"smpte2084", "arib-std-b67"}
             self._source_bitrate = source_br
+            self._source_fps = source_fps
+            self._source_is_hdr = source_is_hdr
+            self._source_color_primaries = color_primaries
+            self._source_color_trc = color_trc
+            self._source_colorspace = colorspace
             mbps = source_br / 1_000_000 if source_br else 0
             self.file_info.configure(
                 text=f"📄 {fname}{res} ({fsize:.1f} MB)"
@@ -292,6 +315,11 @@ class ConvertPanel(ctk.CTkFrame):
         else:
             self._current_file = ""
             self._source_bitrate = 0
+            self._source_fps = 0.0
+            self._source_is_hdr = False
+            self._source_color_primaries = ""
+            self._source_color_trc = ""
+            self._source_colorspace = ""
             self.file_info.configure(text="⚠ File not found")
             self.convert_btn.configure(state="disabled")
             self.play_btn.pack_forget()
@@ -399,6 +427,12 @@ class ConvertPanel(ctk.CTkFrame):
                 gpu_device="" if gpu_device == "cpu" else gpu_device,
                 progress_callback=on_progress,
                 cancel_event=self._cancel_event,
+                premiere_compatible=True,
+                fps=self._source_fps,
+                source_is_hdr=self._source_is_hdr,
+                color_primaries=self._source_color_primaries,
+                color_trc=self._source_color_trc,
+                colorspace=self._source_colorspace,
             )
             self.after(0, lambda: self._on_done(success, output))
 

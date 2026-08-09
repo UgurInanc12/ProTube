@@ -21,6 +21,12 @@ class Transcoder:
         gpu_device: str = "",
         progress_callback: Optional[Callable[[float, str], None]] = None,
         cancel_event=None,
+        fps: float = 0,
+        premiere_compatible: bool = True,
+        source_is_hdr: bool = False,
+        color_primaries: str = "",
+        color_trc: str = "",
+        colorspace: str = "",
     ) -> bool:
         """Transcode video. Returns True on success."""
         ext = os.path.splitext(output_path)[1].lower()
@@ -38,8 +44,15 @@ class Transcoder:
         cmd = self.ffmpeg.build_transcode_command(
             input_path=input_path, output_path=output_path,
             video_codec=video_codec, audio_codec=audio_codec,
-            video_bitrate=video_bitrate, crf=crf,
+            video_bitrate=video_bitrate, audio_bitrate="320k" if audio_codec == "aac" else "",
+            crf=crf,
             gpu_device=gpu_device,
+            fps=fps,
+            premiere_compatible=premiere_compatible,
+            source_is_hdr=source_is_hdr,
+            color_primaries=color_primaries,
+            color_trc=color_trc,
+            colorspace=colorspace,
         )
 
         exit_code, _, _ = self.ffmpeg.run(
