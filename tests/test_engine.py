@@ -273,3 +273,34 @@ class TestDownloadRetry:
         assert result == 0
         assert len(attempts) == 2
         mock_sleep.assert_called_once()
+
+
+class TestFetchHangPrevention:
+    """Fetch must never hang on playlist URLs or stalled connections."""
+
+    def test_base_opts_prevent_hangs(self):
+        opts = VideoEngine()._base_opts()
+        assert opts["socket_timeout"] == 15
+        assert opts["noplaylist"] is True
+
+    @patch("src.core.engine.yt_dlp.YoutubeDL")
+    def test_fetch_passes_hang_prevention_opts(self, mock_ydl_cls):
+        mock_ydl = MagicMock()
+        mock_ydl.extract_info.return_value = {
+            "id": "x", "title": "T", "duration": 1,
+            "formats": [], "subtitles": {},
+        }
+        mock_ydl_cls.return_value.__enter__.return_value = mock_ydl
+
+        VideoEngine().fetch_metadata("https://youtube.com/watch?v=x")
+
+        opts = mock_ydl_cls.call_args.args[0]
+        assert opts["noplaylist"] is True
+        assert opts["socket_timeout"] == 15
+
+    def test_browser_cookie_strategies_come_last(self):
+        labels = [s["label"] for s in VideoEngine()._get_strategies()]
+        assert labels[0] == "no-auth"
+        assert labels[-1] == "edge"
+        assert labels[-2] == "chrome"
+        assert labels.index("chrome") > labels.index("no-auth")

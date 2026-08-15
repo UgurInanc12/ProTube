@@ -37,6 +37,9 @@ class MainWindow(ctk.CTkFrame):
         self._download_result_visible = False
         self._download_error = ""
         self._pending_session_folder = ""
+        self._fetch_gen = 0
+        self._fetch_active = False
+        self._fetch_watchdog_id = None
         self._build()
 
     def _build(self):
@@ -162,16 +165,33 @@ class MainWindow(ctk.CTkFrame):
             command=self._go_to_convert_tab,
         )
 
+    FETCH_TIMEOUT_MS = 90_000  # watchdog for a stuck background fetch
+
     def _on_fetch(self, url: str):
-        """Fetch video metadata in background."""
+        """Fetch video metadata in the background.
+
+        A watchdog recovers the UI if the request ever gets stuck, so a
+        failed fetch can never leave the button disabled forever.
+        """
         self._reset_download_result()
         self._status("Fetching video metadata...")
+        self._fetch_gen += 1
+        gen = self._fetch_gen
+
+        def finish():
+            """Run on the UI thread when the fetch thread is done."""
+            self._fetch_active = False
+            if self._fetch_watchdog_id is not None:
+                self.after_cancel(self._fetch_watchdog_id)
+                self._fetch_watchdog_id = None
+            self.url_bar.set_ready()
 
         def fetch():
             engine = VideoEngine()
             try:
                 data = engine.fetch_metadata(url)
-                self.after(0, lambda: self._display_metadata(data))
+                if gen == self._fetch_gen:
+                    self.after(0, lambda: self._display_metadata(data))
             except Exception as e:
                 msg = str(e)
                 log.error(f"Fetch failed: {msg[:300]}")
@@ -179,11 +199,31 @@ class MainWindow(ctk.CTkFrame):
                     msg = "Video unavailable or network error"
                 elif "Unsupported URL" in msg:
                     msg = "Unsupported URL. Make sure it's a valid YouTube link."
-                self.after(0, lambda: self._show_error(msg))
+                if gen == self._fetch_gen:
+                    self.after(0, lambda: self._show_error(msg))
             finally:
-                self.after(0, self.url_bar.set_ready)
+                if gen == self._fetch_gen:
+                    self.after(0, finish)
 
+        self._fetch_active = True
         Thread(target=fetch, daemon=True).start()
+        self._fetch_watchdog_id = self.after(
+            self.FETCH_TIMEOUT_MS, self._fetch_watchdog
+        )
+
+    def _fetch_watchdog(self):
+        """Recover the UI if a background fetch never finishes."""
+        self._fetch_watchdog_id = None
+        if not self._fetch_active:
+            return
+        self._fetch_active = False
+        self._fetch_gen += 1  # ignore any late result from the stuck thread
+        self.url_bar.set_ready()
+        log.error(
+            f"Fetch watchdog fired after {self.FETCH_TIMEOUT_MS // 1000}s "
+            "without a result"
+        )
+        self._show_error("Fetch timed out. Check your connection and try again.")
 
     def _display_metadata(self, data: dict):
         """Show fetched metadata and format selector."""

@@ -34,6 +34,17 @@ def setup_logging(base_dir: Path) -> logging.Logger:
 
     sys.excepthook = exception_handler
 
+    # sys.excepthook never sees failures in background threads; log those too.
+    import threading
+
+    def thread_exception_handler(args):
+        logger.critical(
+            "Unhandled exception in thread",
+            exc_info=(args.exc_type, args.exc_value, args.exc_traceback),
+        )
+
+    threading.excepthook = thread_exception_handler
+
     logger.info(f"ProTube started | log: {log_path}")
     logger.info(f"Python: {sys.version} | frozen: {getattr(sys, 'frozen', False)}")
     if getattr(sys, "frozen", False):

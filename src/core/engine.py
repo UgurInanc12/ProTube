@@ -28,7 +28,16 @@ class VideoEngine:
         self.last_download_error = ""
 
     def _base_opts(self) -> dict:
-        opts = {"quiet": True, "no_warnings": True}
+        opts = {
+            "quiet": True,
+            "no_warnings": True,
+            # A stalled connection must fail fast instead of hanging the UI.
+            "socket_timeout": 15,
+            # ProTube handles a single video. Playlist URLs (e.g. Radio
+            # mixes with &list=RD...) must never trigger full playlist
+            # extraction, which can run for minutes.
+            "noplaylist": True,
+        }
         if _NODE_PATH:
             opts["extractor_args"] = {
                 "youtube": {"js_runtimes": [f"node:{_NODE_PATH}"]}
@@ -38,12 +47,13 @@ class VideoEngine:
     # ── strategies ─────────────────────────────────────────────
 
     def _get_strategies(self) -> list[dict]:
-        """All auth strategies, tried in order."""
-        strategies = [
-            {"label": "no-auth", "opts": {}},
-            {"label": "chrome", "opts": {"cookiesfrombrowser": ["chrome"]}},
-            {"label": "edge", "opts": {"cookiesfrombrowser": ["edge"]}},
-        ]
+        """All auth strategies, tried in order.
+
+        Browser cookie lookups come last: reading a running browser's cookie
+        database can block on Windows file locks / DPAPI, so file-based auth
+        and plain no-auth requests are tried first.
+        """
+        strategies = [{"label": "no-auth", "opts": {}}]
 
         # cookies.txt file (user exports via Chrome extension)
         from src.core.session_manager import SessionManager
@@ -54,6 +64,10 @@ class VideoEngine:
                 "opts": {"cookies": str(cookies_txt)},
             })
 
+        strategies.extend([
+            {"label": "chrome", "opts": {"cookiesfrombrowser": ["chrome"]}},
+            {"label": "edge", "opts": {"cookiesfrombrowser": ["edge"]}},
+        ])
         return strategies
 
     # ── fetch ──────────────────────────────────────────────────
@@ -62,7 +76,10 @@ class VideoEngine:
         last_error = None
         for strategy in self._get_strategies():
             try:
-                return self._try_fetch(url, strategy)
+                log.info(f"Fetch strategy: {strategy['label']}")
+                data = self._try_fetch(url, strategy)
+                log.info(f"Fetch OK [{strategy['label']}]")
+                return data
             except Exception as e:
                 last_error = e
                 log.warning(f"[{strategy['label']}] fetch failed: {str(e)[:150]}")
