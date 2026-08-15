@@ -2,6 +2,7 @@
 import os
 import sys
 import json
+import shutil
 import logging
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
@@ -112,6 +113,20 @@ class SessionManager:
         self._records[folder_name] = record
         log.info(f"Recorded download: '{folder_name}' -> {record.downloaded_file}")
         self._save()
+
+    def discard_session(self, folder_name: str):
+        """Delete a failed/cancelled session so its folder name stays free.
+
+        Incomplete downloads must not consume session names (e.g. "#2", "#3")
+        and must not show up as empty sessions in the Convert/Audio tabs.
+        """
+        self._records.pop(folder_name, None)
+        path = self._base_dir / folder_name
+        if path.exists():
+            shutil.rmtree(path, ignore_errors=True)
+            log.info(f"Discarded incomplete session folder: {folder_name}")
+        else:
+            log.debug(f"No session folder to discard: {folder_name}")
 
     def get_record(self, folder_name: str) -> Optional[SessionRecord]:
         return self._records.get(folder_name)

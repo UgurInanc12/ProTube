@@ -323,6 +323,7 @@ class MainWindow(ctk.CTkFrame):
                 self.after(0, lambda: self._status("🚫 Download cancelled"))
                 self.after(0, lambda: self.dl_cancel_btn.configure(state="disabled"))
                 self.after(0, lambda: self.download_btn.configure(state="normal", text="⬇ Download"))
+                self._discard_session_folder(folder_name)
                 return
 
             if result == 0:
@@ -342,11 +343,13 @@ class MainWindow(ctk.CTkFrame):
                     ))
                     self.after(0, lambda name=os.path.basename(downloaded), folder=folder_name: self._show_download_success(name, folder))
                 else:
+                    self._discard_session_folder(folder_name)
                     self.after(0, lambda: self._status("❌ Download failed: no output file was found"))
                     self.after(0, lambda: self._show_download_failure(
                         "The download engine completed without producing an output file."
                     ))
             else:
+                self._discard_session_folder(folder_name)
                 error_detail = engine.last_download_error
                 self.after(0, lambda: self._status("❌ Download failed"))
                 self.after(0, lambda detail=error_detail: self._show_download_failure(
@@ -363,6 +366,15 @@ class MainWindow(ctk.CTkFrame):
         self._dl_cancel_event.set()
         self.dl_cancel_btn.configure(state="disabled")
         self._status("Cancelling download...")
+
+    def _discard_session_folder(self, folder_name: str):
+        """Remove a failed/cancelled download's folder so its name stays free.
+
+        Called from the download thread; the UI state update is marshalled
+        back to the main thread with self.after.
+        """
+        self.sm.discard_session(folder_name)
+        self.after(0, lambda: setattr(self, "_pending_session_folder", ""))
 
     def _find_downloaded(self, directory: str) -> str:
         files = glob.glob(os.path.join(directory, "*"))

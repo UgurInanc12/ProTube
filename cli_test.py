@@ -147,6 +147,7 @@ def cmd_download(url: str):
             return True
     else:
         print(f"\nDOWNLOAD FAILED (exit code: {exit_code})")
+        sm.discard_session(folder_name)
         return False
 
 
