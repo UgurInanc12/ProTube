@@ -274,6 +274,45 @@ class TestDownloadRetry:
         assert len(attempts) == 2
         mock_sleep.assert_called_once()
 
+    @patch("src.core.engine.time.sleep")
+    @patch("src.core.engine.yt_dlp.YoutubeDL")
+    def test_first_attempt_403_is_retried_and_succeeds(self, mock_ydl_cls, mock_sleep):
+        """First stream request often gets YouTube's temporary 403 bot block."""
+        attempts = []
+        ydl = MagicMock()
+
+        def download(_urls):
+            attempts.append(1)
+            if len(attempts) == 1:
+                raise RuntimeError(
+                    "ERROR: unable to download video data: HTTP Error 403: Forbidden"
+                )
+
+        ydl.download.side_effect = download
+        mock_ydl_cls.return_value.__enter__.return_value = ydl
+
+        result = VideoEngine().download(
+            "https://example.com/video", tempfile.gettempdir(), "137"
+        )
+
+        assert result == 0
+        assert len(attempts) == 2
+        mock_sleep.assert_called_once_with(3.0)
+
+    def test_403_is_treated_as_transient(self):
+        error = RuntimeError(
+            "ERROR: unable to download video data: HTTP Error 403: Forbidden"
+        )
+        assert VideoEngine._is_transient_download_error(error) is True
+
+    def test_permanent_errors_are_not_transient(self):
+        assert VideoEngine._is_transient_download_error(
+            RuntimeError("HTTP Error 401: Unauthorized")
+        ) is False
+        assert VideoEngine._is_transient_download_error(
+            RuntimeError("HTTP Error 404: Not Found")
+        ) is False
+
 
 class TestFetchHangPrevention:
     """Fetch must never hang on playlist URLs or stalled connections."""

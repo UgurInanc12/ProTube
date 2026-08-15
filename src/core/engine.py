@@ -114,6 +114,10 @@ class VideoEngine:
             "connection reset", "connection aborted", "connection refused",
             "network is unreachable", "http error 429", "http error 500",
             "http error 502", "http error 503", "http error 504",
+            # YouTube's bot protection frequently rejects the first
+            # stream request with a 403; a short wait and a retry
+            # usually succeeds (observed on real sessions).
+            "http error 403",
             "temporary failure", "transient",
         ))
 
@@ -159,7 +163,7 @@ class VideoEngine:
                     except Exception as error:
                         if attempt == 0 and self._is_transient_download_error(error):
                             log.warning(f"[{strategy['label']}] transient failure, retrying once: {str(error)[:150]}")
-                            time.sleep(1.0)
+                            time.sleep(3.0)
                             continue
                         raise
                 log.info(f"Download OK [{strategy['label']}]")
