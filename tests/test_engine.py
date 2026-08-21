@@ -203,6 +203,27 @@ class TestFetchMetadata:
         assert VideoEngine().download("url", tempfile.gettempdir(), "137") == 0
         assert mock_ydl_cls.call_args.args[0]["noplaylist"] is True
 
+    def test_base_options_use_downloadable_youtube_client(self):
+        opts = VideoEngine()._base_opts()
+
+        assert opts["extractor_args"]["youtube"]["player_client"] == ["web_embedded"]
+
+    @patch("src.core.engine._NODE_PATH", r"C:\\Tools\\node.exe")
+    def test_node_runtime_is_passed_as_top_level_yt_dlp_option(self):
+        opts = VideoEngine()._base_opts()
+
+        assert opts["js_runtimes"] == {
+            "node": {"path": r"C:\\Tools\\node.exe"}
+        }
+        assert "js_runtimes" not in opts["extractor_args"]["youtube"]
+
+    @patch("src.core.engine._NODE_PATH", "")
+    def test_base_options_work_without_node_runtime(self):
+        opts = VideoEngine()._base_opts()
+
+        assert "js_runtimes" not in opts
+        assert opts["extractor_args"]["youtube"]["player_client"] == ["web_embedded"]
+
     @patch("src.core.engine.yt_dlp.YoutubeDL")
     def test_failed_download_preserves_last_error(self, mock_ydl_cls):
         mock_ydl = MagicMock()

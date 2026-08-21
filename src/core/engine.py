@@ -37,11 +37,17 @@ class VideoEngine:
             # mixes with &list=RD...) must never trigger full playlist
             # extraction, which can run for minutes.
             "noplaylist": True,
+            # The default Android VR client currently exposes media URLs that
+            # YouTube rejects with HTTP 403 on this network. The embedded web
+            # client provides challenge-signed URLs that download reliably.
+            "extractor_args": {
+                "youtube": {"player_client": ["web_embedded"]}
+            },
         }
         if _NODE_PATH:
-            opts["extractor_args"] = {
-                "youtube": {"js_runtimes": [f"node:{_NODE_PATH}"]}
-            }
+            # js_runtimes is a top-level yt-dlp option, not an extractor arg.
+            # Supplying it in extractor_args is silently ignored.
+            opts["js_runtimes"] = {"node": {"path": _NODE_PATH}}
         return opts
 
     # ── strategies ─────────────────────────────────────────────

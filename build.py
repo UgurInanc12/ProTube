@@ -17,8 +17,8 @@ ICON_PATH = "assets/icon.ico"
 
 
 def clean():
-    """Remove previous build artifacts."""
-    for d in ["build", "dist"]:
+    """Remove disposable build artifacts without deleting user sessions."""
+    for d in ["build"]:
         if os.path.exists(d):
             shutil.rmtree(d)
     for f in os.listdir("."):
