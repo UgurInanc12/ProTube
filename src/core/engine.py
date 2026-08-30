@@ -33,6 +33,11 @@ class VideoEngine:
             "no_warnings": True,
             # A stalled connection must fail fast instead of hanging the UI.
             "socket_timeout": 15,
+            # Force IPv4 (same as yt-dlp CLI -4). IPv6 to YouTube hosts
+            # times out on this network (15s per connection attempt),
+            # which stretched every fetch to ~2 minutes and tripped the
+            # 90s GUI watchdog.
+            "source_address": "0.0.0.0",
             # ProTube handles a single video. Playlist URLs (e.g. Radio
             # mixes with &list=RD...) must never trigger full playlist
             # extraction, which can run for minutes.

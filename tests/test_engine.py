@@ -343,6 +343,13 @@ class TestFetchHangPrevention:
         assert opts["socket_timeout"] == 15
         assert opts["noplaylist"] is True
 
+    def test_base_opts_force_ipv4(self):
+        """IPv6 to YouTube times out on some networks (15s per attempt),
+        stretching fetches past the GUI watchdog. source_address=0.0.0.0
+        is yt-dlp's -4 switch and must always be present."""
+        opts = VideoEngine()._base_opts()
+        assert opts["source_address"] == "0.0.0.0"
+
     @patch("src.core.engine.yt_dlp.YoutubeDL")
     def test_fetch_passes_hang_prevention_opts(self, mock_ydl_cls):
         mock_ydl = MagicMock()
