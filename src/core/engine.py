@@ -42,12 +42,6 @@ class VideoEngine:
             # mixes with &list=RD...) must never trigger full playlist
             # extraction, which can run for minutes.
             "noplaylist": True,
-            # The default Android VR client currently exposes media URLs that
-            # YouTube rejects with HTTP 403 on this network. The embedded web
-            # client provides challenge-signed URLs that download reliably.
-            "extractor_args": {
-                "youtube": {"player_client": ["web_embedded"]}
-            },
         }
         if _NODE_PATH:
             # js_runtimes is a top-level yt-dlp option, not an extractor arg.
@@ -83,32 +77,53 @@ class VideoEngine:
 
     # ── fetch ──────────────────────────────────────────────────
 
+    @staticmethod
+    def _requires_auth_retry(error: Exception) -> bool:
+        message = str(error).lower()
+        return any(marker in message for marker in (
+            "sign in", "login required", "authentication required",
+            "confirm your age", "age-restricted", "age restricted",
+            "members-only", "members only", "private video",
+        ))
+
     def fetch_metadata(self, url: str) -> dict:
+        strategies = self._get_strategies()
+        primary_error = None
         last_error = None
-        for strategy in self._get_strategies():
+
+        for index, strategy in enumerate(strategies):
             try:
                 log.info(f"Fetch strategy: {strategy['label']}")
                 data = self._try_fetch(url, strategy)
                 log.info(f"Fetch OK [{strategy['label']}]")
                 return data
             except Exception as e:
+                if primary_error is None:
+                    primary_error = e
                 last_error = e
                 log.warning(f"[{strategy['label']}] fetch failed: {str(e)[:150]}")
+                # Browser cookies only help authentication failures. Retrying a
+                # public video extraction error through locked browser databases
+                # hides the real cause behind unrelated cookie-copy noise.
+                if index == 0 and not self._requires_auth_retry(e):
+                    break
 
-        # All failed - give clear instructions
         from src.core.session_manager import SessionManager
         cookies_path = SessionManager().base_dir / "cookies.txt"
-        detail = str(last_error)[:500] if last_error else "Unknown extraction error"
+        detail_error = primary_error or last_error
+        detail = str(detail_error)[:500] if detail_error else "Unknown extraction error"
+        auth_help = ""
+        if detail_error and self._requires_auth_retry(detail_error):
+            auth_help = (
+                f"\n\nIf the video needs your YouTube account:\n"
+                f"1. Export youtube.com cookies with 'Get cookies.txt LOCALLY'\n"
+                f"2. Save the file as:\n"
+                f"   {cookies_path}\n"
+                f"3. Retry in ProTube."
+            )
         raise RuntimeError(
             f"Unable to fetch this video.\n\n"
-            f"Last error: {detail}\n\n"
-            f"Quick fix (one-time, 30 seconds):\n"
-            f"1. Open Chrome, go to youtube.com\n"
-            f"2. Install extension: 'Get cookies.txt LOCALLY'\n"
-            f"3. Click the extension icon on youtube.com\n"
-            f"4. Click 'Export' → save as:\n"
-            f"   {cookies_path}\n"
-            f"5. Retry in ProTube - works immediately."
+            f"Error: {detail}{auth_help}"
         )
 
     # ── download ───────────────────────────────────────────────

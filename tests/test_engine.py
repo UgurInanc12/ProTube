@@ -203,10 +203,75 @@ class TestFetchMetadata:
         assert VideoEngine().download("url", tempfile.gettempdir(), "137") == 0
         assert mock_ydl_cls.call_args.args[0]["noplaylist"] is True
 
-    def test_base_options_use_downloadable_youtube_client(self):
+    def test_base_options_do_not_force_a_single_youtube_client(self):
+        """yt-dlp must select a working client for each video.
+
+        The previously forced web_embedded client reports "Video unavailable"
+        for public videos that the default client can fetch and download.
+        """
         opts = VideoEngine()._base_opts()
 
-        assert opts["extractor_args"]["youtube"]["player_client"] == ["web_embedded"]
+        assert "extractor_args" not in opts
+        assert "player_client" not in str(opts)
+
+    @patch("src.core.engine.yt_dlp.YoutubeDL")
+    def test_fetch_surfaces_the_primary_video_error_not_cookie_lock_noise(self, mock_ydl_cls):
+        errors = iter([
+            RuntimeError("ERROR: [youtube] test: Sign in to confirm your age"),
+            RuntimeError("ERROR: Could not copy Chrome cookie database"),
+            RuntimeError("ERROR: Could not copy Chrome cookie database"),
+        ])
+        mock_ydl = MagicMock()
+        mock_ydl.extract_info.side_effect = lambda *_args, **_kwargs: (_ for _ in ()).throw(next(errors))
+        mock_ydl_cls.return_value.__enter__.return_value = mock_ydl
+
+        try:
+            VideoEngine().fetch_metadata("https://youtube.com/watch?v=test")
+        except RuntimeError as error:
+            message = str(error)
+        else:
+            raise AssertionError("fetch_metadata should fail")
+
+        assert "Sign in to confirm your age" in message
+        assert "Could not copy Chrome cookie database" not in message
+
+    @patch("src.core.engine.yt_dlp.YoutubeDL")
+    def test_fetch_retries_auth_error_with_browser_cookies(self, mock_ydl_cls):
+        attempts = []
+        mock_ydl = MagicMock()
+
+        def extract_info(*_args, **_kwargs):
+            attempts.append(1)
+            if len(attempts) < 3:
+                raise RuntimeError("ERROR: Sign in to confirm your age")
+            return {"id": "test", "title": "Test", "duration": 1, "formats": [], "subtitles": {}}
+
+        mock_ydl.extract_info.side_effect = extract_info
+        mock_ydl_cls.return_value.__enter__.return_value = mock_ydl
+
+        result = VideoEngine().fetch_metadata("https://youtube.com/watch?v=test")
+
+        assert result["video"].id == "test"
+        assert mock_ydl_cls.call_count == 3
+        assert "cookiesfrombrowser" in mock_ydl_cls.call_args.args[0]
+
+    @patch("src.core.engine.yt_dlp.YoutubeDL")
+    def test_fetch_does_not_try_browser_cookies_for_non_auth_error(self, mock_ydl_cls):
+        mock_ydl = MagicMock()
+        mock_ydl.extract_info.side_effect = RuntimeError(
+            "ERROR: [youtube] test: Video unavailable"
+        )
+        mock_ydl_cls.return_value.__enter__.return_value = mock_ydl
+
+        try:
+            VideoEngine().fetch_metadata("https://youtube.com/watch?v=test")
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("fetch_metadata should fail")
+
+        assert mock_ydl_cls.call_count == 1
+        assert "cookiesfrombrowser" not in mock_ydl_cls.call_args.args[0]
 
     @patch("src.core.engine._NODE_PATH", r"C:\\Tools\\node.exe")
     def test_node_runtime_is_passed_as_top_level_yt_dlp_option(self):
@@ -215,14 +280,14 @@ class TestFetchMetadata:
         assert opts["js_runtimes"] == {
             "node": {"path": r"C:\\Tools\\node.exe"}
         }
-        assert "js_runtimes" not in opts["extractor_args"]["youtube"]
+        assert "extractor_args" not in opts
 
     @patch("src.core.engine._NODE_PATH", "")
     def test_base_options_work_without_node_runtime(self):
         opts = VideoEngine()._base_opts()
 
         assert "js_runtimes" not in opts
-        assert opts["extractor_args"]["youtube"]["player_client"] == ["web_embedded"]
+        assert "extractor_args" not in opts
 
     @patch("src.core.engine.yt_dlp.YoutubeDL")
     def test_failed_download_preserves_last_error(self, mock_ydl_cls):
