@@ -6,6 +6,11 @@ import shutil
 import time
 from typing import Optional, Callable
 import yt_dlp
+from src.core.download_options import (
+    DOWNLOAD_MODE_AUDIO,
+    DOWNLOAD_MODE_TEXT,
+    DOWNLOAD_MODE_VIDEO,
+)
 from src.core.models import (
     VideoInfo, FormatInfo, SubtitleInfo, TextTrackInfo,
     DownloadProgress, DownloadStatus,
@@ -151,22 +156,18 @@ class VideoEngine:
         self,
         url: str,
         output_dir: str,
-        format_id: str,
+        format_id: Optional[str] = None,
         audio_format_id: Optional[str] = None,
         subtitle_lang: Optional[str] = None,
         embed_subs: bool = False,
         text_track=None,
         merge_output_format: Optional[str] = None,
+        download_mode: str = DOWNLOAD_MODE_VIDEO,
     ) -> int:
-        format_str = format_id
-        if audio_format_id:
-            format_str = f"{format_id}+{audio_format_id}"
-
         output_template = f"{output_dir}/%(title)s.%(ext)s"
 
         base_opts = self._base_opts()
         base_opts.update({
-            "format": format_str,
             "noplaylist": True,
             "outtmpl": output_template,
             "progress_hooks": [self._progress_hook] if self.progress_callback else [],
@@ -174,11 +175,34 @@ class VideoEngine:
             "writeautomaticsub": bool(text_track and getattr(text_track, "is_auto", False)),
             "subtitleslangs": [subtitle_lang] if subtitle_lang else ([text_track.language] if text_track else []),
             "embedsubtitles": embed_subs,
-            "merge_output_format": merge_output_format or "mp4",
         })
 
+        if download_mode == DOWNLOAD_MODE_TEXT:
+            # Only the text track is wanted, so no media stream is requested at
+            # all. yt-dlp still writes the subtitle sidecar with skip_download.
+            base_opts["skip_download"] = True
+        elif download_mode == DOWNLOAD_MODE_AUDIO:
+            if not audio_format_id:
+                self.last_download_error = "No audio track was selected."
+                if self.progress_callback:
+                    self.progress_callback(DownloadProgress(status=DownloadStatus.FAILED))
+                return 1
+            # A single audio stream needs no merge: forcing a video container
+            # would remux the track for no benefit.
+            base_opts["format"] = audio_format_id
+        else:
+            if not format_id:
+                self.last_download_error = "No video format was selected."
+                if self.progress_callback:
+                    self.progress_callback(DownloadProgress(status=DownloadStatus.FAILED))
+                return 1
+            base_opts["format"] = (
+                f"{format_id}+{audio_format_id}" if audio_format_id else format_id
+            )
+            base_opts["merge_output_format"] = merge_output_format or "mp4"
+
         last_error = None
-        for strategy in self._get_strategies():
+        for index, strategy in enumerate(self._get_strategies()):
             try:
                 opts = dict(base_opts)
                 opts.update(strategy["opts"])
@@ -199,8 +223,15 @@ class VideoEngine:
                     )
                 return 0
             except Exception as e:
-                last_error = e
+                if last_error is None:
+                    last_error = e
                 log.warning(f"[{strategy['label']}] download failed: {str(e)[:150]}")
+                # Same gate fetch_metadata uses: browser cookies only help
+                # authentication failures. Falling through on a rate limit or a
+                # network error replaces the real cause with an unrelated
+                # "Could not copy Chrome cookie database" message.
+                if index == 0 and not self._requires_auth_retry(e):
+                    break
 
         self.last_download_error = str(last_error) if last_error else "Unknown download error"
         if self.progress_callback:
@@ -259,14 +290,19 @@ class VideoEngine:
 
     @staticmethod
     def _fmt(f: dict) -> FormatInfo:
-        has_video = f.get("vcodec", "none") != "none"
-        has_audio = f.get("acodec", "none") != "none"
+        vcodec = f.get("vcodec", "none")
+        acodec = f.get("acodec", "none")
+        has_video = vcodec != "none"
+        has_audio = acodec != "none"
+        # YouTube reports the literal string "none" for the missing stream, so
+        # a plain `or` would label every audio track with the codec "none".
+        codec = (vcodec if has_video else "") or (acodec if has_audio else "") or ""
         return FormatInfo(
             format_id=f.get("format_id", ""),
             ext=f.get("ext", ""),
             resolution=f.get("resolution", "") or "",
             fps=f.get("fps"),
-            codec=(f.get("vcodec") or f.get("acodec") or ""),
+            codec=codec,
             filesize=f.get("filesize") or f.get("filesize_approx"),
             tbr=f.get("tbr"), vbr=f.get("vbr"), abr=f.get("abr"),
             format_note=f.get("format_note", "") or "",
@@ -321,18 +357,33 @@ class VideoEngine:
         return result
 
     def _parse_text_tracks(self, tracks: dict) -> list[TextTrackInfo]:
-        result = []
+        """Build the transcript list, real ASR tracks before machine translations.
+
+        YouTube returns one genuine ASR track plus ~150 machine translations of
+        it, all in the same dict. A translation carries a `tlang` query
+        parameter; the source track does not. Without that split the list is
+        alphabetical, so the default pick is Abkhazian rather than the language
+        actually spoken in the video.
+        """
         lang_names = {
             "en": "English", "tr": "Turkish", "de": "German",
             "fr": "French", "es": "Spanish", "ja": "Japanese",
         }
+        originals: list[TextTrackInfo] = []
+        translations: list[TextTrackInfo] = []
         for lang, entries in tracks.items():
             if not entries:
                 continue
-            result.append(TextTrackInfo(
+            is_translation = any(
+                "tlang=" in (entry.get("url") or "") for entry in entries
+            )
+            track = TextTrackInfo(
                 language=lang,
                 language_name=lang_names.get(lang, lang.upper()),
                 ext=entries[0].get("ext", "vtt"),
                 is_auto=True,
-            ))
+                is_translation=is_translation,
+            )
+            (translations if is_translation else originals).append(track)
+        result = originals + translations
         return result

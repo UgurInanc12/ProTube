@@ -3,6 +3,8 @@
 Usage:
     python cli_test.py fetch <url>           # fetch metadata only
     python cli_test.py download <url>        # fetch + download at lowest quality
+    python cli_test.py audio-only <url>      # fetch + download best audio only
+    python cli_test.py text-only <url> [lang]  # fetch + download subtitle only
     python cli_test.py convert <filepath>    # transcode with FFmpeg
     python cli_test.py audio <filepath>      # extract audio
 """
@@ -22,6 +24,12 @@ logging.basicConfig(
 log = logging.getLogger("protube")
 
 from src.core.engine import VideoEngine
+from src.core.download_options import (
+    DOWNLOAD_MODE_AUDIO,
+    DOWNLOAD_MODE_TEXT,
+    audio_format_by_id,
+    resolve_best_audio_format_id,
+)
 from src.core.session_manager import SessionManager, SessionRecord
 from src.core.transcoder import Transcoder
 from src.utils.ffmpeg import FFmpegManager
@@ -151,6 +159,138 @@ def cmd_download(url: str):
         return False
 
 
+def cmd_audio_only(url: str):
+    """Fetch metadata, then download the best audio track without any video."""
+    sm = SessionManager()
+    print("\n=== Fetching metadata ===\n")
+    engine = VideoEngine()
+
+    try:
+        data = engine.fetch_metadata(url)
+    except Exception as e:
+        print(f"\nFETCH FAILED: {e}")
+        return False
+
+    video = data["video"]
+    print(f"Title: {video.title}")
+
+    audio_id = resolve_best_audio_format_id(data["audio_formats"])
+    if not audio_id:
+        print("No separate audio track is available for this video.")
+        return False
+    chosen = audio_format_by_id(data["audio_formats"], audio_id)
+    print(
+        f"Chosen audio: {chosen.format_id} ({chosen.abr}kbps, "
+        f"{chosen.codec}, .{chosen.ext}, {chosen.filesize_mb or '?'}MB)"
+    )
+
+    folder_name = sm.create_session(video.id, video.title, video.url)
+    output_dir = str(sm.session_dir(folder_name))
+    print(f"Output dir: {output_dir}")
+
+    print("\n=== Downloading audio only ===\n")
+    exit_code = engine.download(
+        url=url,
+        output_dir=output_dir,
+        audio_format_id=audio_id,
+        download_mode=DOWNLOAD_MODE_AUDIO,
+    )
+
+    if exit_code != 0:
+        print(f"\nDOWNLOAD FAILED: {engine.last_download_error}")
+        sm.discard_session(folder_name)
+        return False
+
+    import glob
+    files = [f for f in glob.glob(os.path.join(output_dir, "*")) if os.path.isfile(f)]
+    if not files:
+        print("\nSUCCESS reported but no file found")
+        sm.discard_session(folder_name)
+        return False
+
+    downloaded = max(files, key=os.path.getctime)
+    size_mb = os.path.getsize(downloaded) / (1024 * 1024)
+    print(f"\nSUCCESS: {os.path.basename(downloaded)} ({size_mb:.1f}MB)")
+    sm.record_download(folder_name, SessionRecord(
+        video_id=video.id, title=video.title, url=video.url,
+        downloaded_file=downloaded, audio_format=audio_id,
+    ))
+    return downloaded
+
+
+def cmd_text_only(url: str, language: str = ""):
+    """Fetch metadata, then download only a subtitle or transcript track."""
+    sm = SessionManager()
+    print("\n=== Fetching metadata ===\n")
+    engine = VideoEngine()
+
+    try:
+        data = engine.fetch_metadata(url)
+    except Exception as e:
+        print(f"\nFETCH FAILED: {e}")
+        return False
+
+    video = data["video"]
+    print(f"Title: {video.title}")
+    print(f"Manual subtitles: {[s.language for s in data['subtitles']]}")
+
+    subtitle_lang = None
+    text_track = None
+    available = {s.language: s for s in data["subtitles"]}
+    if language and language in available:
+        subtitle_lang = language
+    elif not language and available:
+        subtitle_lang = next(iter(available))
+    else:
+        # _parse_text_tracks puts the real ASR tracks first, so the head of the
+        # list is the spoken language rather than an alphabetical translation.
+        auto = data["automatic_captions"]
+        if language:
+            text_track = next((t for t in auto if t.language == language), None)
+        elif auto:
+            text_track = auto[0]
+
+    if not subtitle_lang and not text_track:
+        print("No subtitle or transcript track is available.")
+        return False
+    print(f"Chosen text track: {subtitle_lang or text_track.language} "
+          f"({'manual subtitle' if subtitle_lang else 'auto transcript'})")
+
+    folder_name = sm.create_session(video.id, video.title, video.url)
+    output_dir = str(sm.session_dir(folder_name))
+    print(f"Output dir: {output_dir}")
+
+    print("\n=== Downloading text only ===\n")
+    exit_code = engine.download(
+        url=url,
+        output_dir=output_dir,
+        subtitle_lang=subtitle_lang,
+        text_track=text_track,
+        download_mode=DOWNLOAD_MODE_TEXT,
+    )
+
+    if exit_code != 0:
+        print(f"\nDOWNLOAD FAILED: {engine.last_download_error}")
+        sm.discard_session(folder_name)
+        return False
+
+    import glob
+    files = [f for f in glob.glob(os.path.join(output_dir, "*")) if os.path.isfile(f)]
+    if not files:
+        print("\nSUCCESS reported but no file found")
+        sm.discard_session(folder_name)
+        return False
+
+    downloaded = max(files, key=os.path.getctime)
+    size_kb = os.path.getsize(downloaded) / 1024
+    print(f"\nSUCCESS: {os.path.basename(downloaded)} ({size_kb:.1f}KB)")
+    sm.record_download(folder_name, SessionRecord(
+        video_id=video.id, title=video.title, url=video.url,
+        downloaded_file=downloaded, subtitles_file=downloaded,
+    ))
+    return downloaded
+
+
 def cmd_convert(filepath: str):
     """Test FFmpeg transcoding on a file."""
     ffmpeg = FFmpegManager()
@@ -225,6 +365,12 @@ if __name__ == "__main__":
         sys.exit(0 if result else 1)
     elif cmd == "download":
         result = cmd_download(arg)
+        sys.exit(0 if result else 1)
+    elif cmd == "audio-only":
+        result = cmd_audio_only(arg)
+        sys.exit(0 if result else 1)
+    elif cmd == "text-only":
+        result = cmd_text_only(arg, sys.argv[3] if len(sys.argv) > 3 else "")
         sys.exit(0 if result else 1)
     elif cmd == "convert":
         result = cmd_convert(arg)

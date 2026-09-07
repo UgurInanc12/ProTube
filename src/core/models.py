@@ -118,11 +118,17 @@ class TextTrackInfo:
     language_name: str = ""
     ext: str = "vtt"
     is_auto: bool = False
+    is_translation: bool = False
 
     @property
     def label(self) -> str:
         name = self.language_name or self.language
-        suffix = " (auto)" if self.is_auto else ""
+        if self.is_translation:
+            suffix = " (auto-translated)"
+        elif self.is_auto:
+            suffix = " (auto)"
+        else:
+            suffix = ""
         return f"{name}{suffix} · .{self.ext}"
 
 

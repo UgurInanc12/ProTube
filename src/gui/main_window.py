@@ -7,8 +7,12 @@ import customtkinter as ctk
 from threading import Thread
 from src.core.engine import VideoEngine
 from src.core.download_options import (
+    DOWNLOAD_MODE_AUDIO,
+    DOWNLOAD_MODE_TEXT,
+    DOWNLOAD_MODE_VIDEO,
     audio_format_by_id,
     resolve_audio_format_id,
+    resolve_best_audio_format_id,
     resolve_merge_format,
     video_format_by_id,
 )
@@ -262,34 +266,60 @@ class MainWindow(ctk.CTkFrame):
 
         self._hide_download_result()
         selections = self.format_selector.get_selections()
-        video_fmt_id = selections["video_format"]
-        if not video_fmt_id:
-            self._show_error("Please select a video format.")
-            return
-
+        download_mode = selections.get("download_mode", DOWNLOAD_MODE_VIDEO)
         video = self._current_metadata["video"]
-        all_video_formats = (
-            self._current_metadata["video_formats"]
-            + self._current_metadata["combined_formats"]
-        )
-        selected_video = video_format_by_id(all_video_formats, video_fmt_id)
-        if selected_video is None:
-            self._show_error("The selected video format is no longer available. Fetch the video again.")
-            return
-        audio_fmt_id = resolve_audio_format_id(
-            selected_video,
-            selections.get("audio_mode", "auto"),
-            selections.get("audio_format"),
-            self._current_metadata["audio_formats"],
-        )
-        selected_audio = audio_format_by_id(
-            self._current_metadata["audio_formats"], audio_fmt_id
-        )
-        merge_format = resolve_merge_format(selected_video, selected_audio)
+        audio_formats = self._current_metadata["audio_formats"]
+
+        video_fmt_id = None
+        audio_fmt_id = None
+        merge_format = None
+
+        if download_mode == DOWNLOAD_MODE_TEXT:
+            if not selections["subtitle_lang"] and not selections.get("text_track"):
+                self._show_error(
+                    "Select a subtitle or a transcript in the Subtitles tab "
+                    "before downloading text only."
+                )
+                return
+        elif download_mode == DOWNLOAD_MODE_AUDIO:
+            audio_mode = selections.get("audio_mode", "auto")
+            chosen_audio = selections.get("audio_format")
+            audio_fmt_id = (
+                chosen_audio if audio_mode == "format" and chosen_audio
+                else resolve_best_audio_format_id(audio_formats)
+            )
+            if not audio_fmt_id:
+                self._show_error("This video has no separate audio track to download.")
+                return
+        else:
+            video_fmt_id = selections["video_format"]
+            if not video_fmt_id:
+                self._show_error("Please select a video format.")
+                return
+            all_video_formats = (
+                self._current_metadata["video_formats"]
+                + self._current_metadata["combined_formats"]
+            )
+            selected_video = video_format_by_id(all_video_formats, video_fmt_id)
+            if selected_video is None:
+                self._show_error("The selected video format is no longer available. Fetch the video again.")
+                return
+            audio_fmt_id = resolve_audio_format_id(
+                selected_video,
+                selections.get("audio_mode", "auto"),
+                selections.get("audio_format"),
+                audio_formats,
+            )
+            selected_audio = audio_format_by_id(audio_formats, audio_fmt_id)
+            merge_format = resolve_merge_format(selected_video, selected_audio)
+
         folder_name = self.sm.create_session(video.id, video.title, video.url)
         self._pending_session_folder = folder_name
         output_dir = str(self.sm.session_dir(folder_name))
-        log.info(f"Download session: '{folder_name}' -> {output_dir}")
+        log.info(
+            f"Download session [{download_mode}]: '{folder_name}' -> {output_dir} "
+            f"(video={video_fmt_id}, audio={audio_fmt_id})"
+        )
 
         self._status(f"Downloading: {video.title[:80]}")
         self.download_btn.configure(state="disabled", text="Downloading...")
@@ -317,6 +347,7 @@ class MainWindow(ctk.CTkFrame):
                 merge_output_format=merge_format,
                 text_track=selections.get("text_track"),
                 embed_subs=False,
+                download_mode=download_mode,
             )
 
             if self._dl_cancel_event.is_set():
@@ -327,12 +358,12 @@ class MainWindow(ctk.CTkFrame):
                 return
 
             if result == 0:
-                downloaded = self._find_downloaded(output_dir)
+                downloaded = self._find_result_file(output_dir, download_mode)
                 if downloaded:
                     subtitle_file = self._find_subtitle_file(output_dir)
                     rec = SessionRecord(
                         video_id=video.id, title=video.title, url=video.url,
-                        downloaded_file=downloaded, video_format=video_fmt_id,
+                        downloaded_file=downloaded, video_format=video_fmt_id or "",
                         subtitles_file=subtitle_file,
                         audio_format=audio_fmt_id or "",
                     )
@@ -375,6 +406,16 @@ class MainWindow(ctk.CTkFrame):
         """
         self.sm.discard_session(folder_name)
         self.after(0, lambda: setattr(self, "_pending_session_folder", ""))
+
+    def _find_result_file(self, directory: str, download_mode: str) -> str:
+        """Return the artifact that represents this download.
+
+        A text-only download produces no media file, so its subtitle sidecar
+        is the result rather than a sign of failure.
+        """
+        if download_mode == DOWNLOAD_MODE_TEXT:
+            return self._find_subtitle_file(directory)
+        return self._find_downloaded(directory)
 
     def _find_downloaded(self, directory: str) -> str:
         files = glob.glob(os.path.join(directory, "*"))

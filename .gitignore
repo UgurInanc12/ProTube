@@ -33,3 +33,7 @@ sessions/
 
 # Internal planning
 .hermes/
+
+# graphify generated output
+graphify-out/
+graph.json

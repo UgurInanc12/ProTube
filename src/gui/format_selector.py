@@ -1,6 +1,12 @@
 """Compact format selection panel with resolution, codec, and HDR controls."""
 import customtkinter as ctk
 
+from src.core.download_options import (
+    DOWNLOAD_MODE_AUDIO,
+    DOWNLOAD_MODE_LABELS,
+    DOWNLOAD_MODE_TEXT,
+    DOWNLOAD_MODE_VIDEO,
+)
 from src.core.format_options import (
     VideoFormatGroup,
     group_video_formats,
@@ -13,11 +19,14 @@ from src.core.models import FormatInfo, SubtitleInfo, TextTrackInfo
 class FormatSelector(ctk.CTkFrame):
     """Select a quality group first, then a codec/HDR variant."""
 
+    MODE_ORDER = (DOWNLOAD_MODE_VIDEO, DOWNLOAD_MODE_AUDIO, DOWNLOAD_MODE_TEXT)
+
     def __init__(self, master, **kwargs):
         super().__init__(master, **kwargs)
         self._video_var = ctk.StringVar()
         self._audio_var = ctk.StringVar(value="")
         self._audio_mode_var = ctk.StringVar(value="auto")
+        self._download_mode_var = ctk.StringVar(value=DOWNLOAD_MODE_VIDEO)
         self._syncing_audio = False
         self._audio_mode_trace = None
         self._audio_selection_trace = None
@@ -34,10 +43,26 @@ class FormatSelector(ctk.CTkFrame):
 
     def _build(self):
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1)
+
+        mode_frame = ctk.CTkFrame(self)
+        mode_frame.grid(row=0, column=0, padx=10, pady=(5, 0), sticky="ew")
+        ctk.CTkLabel(
+            mode_frame, text="Download type:",
+            font=ctk.CTkFont(size=13, weight="bold"),
+        ).pack(side="left", padx=(10, 12), pady=8)
+        for mode in self.MODE_ORDER:
+            ctk.CTkRadioButton(
+                mode_frame,
+                text=DOWNLOAD_MODE_LABELS[mode],
+                variable=self._download_mode_var,
+                value=mode,
+                command=self._on_download_mode_changed,
+                font=ctk.CTkFont(size=12),
+            ).pack(side="left", padx=(0, 14), pady=8)
 
         self.tabview = ctk.CTkTabview(self)
-        self.tabview.grid(row=0, column=0, padx=10, pady=(5, 0), sticky="nsew")
+        self.tabview.grid(row=1, column=0, padx=10, pady=(5, 0), sticky="nsew")
         self.tab_video = self.tabview.add("Video Formats")
         self.tab_audio = self.tabview.add("Audio Tracks")
         self.tab_subs = self.tabview.add("Subtitles")
@@ -49,6 +74,22 @@ class FormatSelector(ctk.CTkFrame):
         self.audio_scroll.pack(fill="both", expand=True, padx=5, pady=5)
         self.sub_scroll = ctk.CTkScrollableFrame(self.tab_subs, height=280)
         self.sub_scroll.pack(fill="both", expand=True, padx=5, pady=5)
+
+    def _on_download_mode_changed(self):
+        """Open the tab that matters for the chosen download type."""
+        mode = self._download_mode_var.get()
+        if mode == DOWNLOAD_MODE_AUDIO:
+            self.tabview.set("Audio Tracks")
+        elif mode == DOWNLOAD_MODE_TEXT:
+            self.tabview.set("Subtitles")
+        else:
+            self.tabview.set("Video Formats")
+
+    def set_download_mode(self, mode: str):
+        """Select a download type programmatically."""
+        if mode in self.MODE_ORDER:
+            self._download_mode_var.set(mode)
+            self._on_download_mode_changed()
 
     def populate(
         self,
@@ -154,7 +195,7 @@ class FormatSelector(ctk.CTkFrame):
         ).pack(anchor="w", pady=(5, 5))
         self._add_radio_row(
             self.audio_scroll,
-            "Auto-select best audio for video-only formats",
+            "Auto-select best audio (highest quality)",
             self._audio_mode_var, "auto",
         )
         self._add_radio_row(
@@ -254,9 +295,10 @@ class FormatSelector(ctk.CTkFrame):
         self._text_tracks.clear()
 
     def get_selections(self) -> dict:
-        """Return the selected video variant, audio track, and subtitles."""
+        """Return the download type, video variant, audio track, and subtitles."""
         sub = self._subtitle_var.get()
         return {
+            "download_mode": self._download_mode_var.get(),
             "video_format": self._video_var.get(),
             "audio_format": self._audio_var.get() or None,
             "audio_mode": self._audio_mode_var.get(),

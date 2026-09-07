@@ -341,3 +341,68 @@ def test_format_selector_repopulation_replaces_audio_variable_traces():
         assert selector._audio_mode_trace != first_trace
     finally:
         root.destroy()
+
+
+def test_format_selector_reports_the_chosen_download_mode():
+    import customtkinter as ctk
+
+    from src.core.download_options import DOWNLOAD_MODE_AUDIO, DOWNLOAD_MODE_VIDEO
+    from src.gui.format_selector import FormatSelector
+
+    ctk.set_appearance_mode("dark")
+    root = ctk.CTk()
+    root.withdraw()
+    try:
+        selector = FormatSelector(root)
+        video = make_format("137", "1920x1080", 60, "avc1", "mp4", 10_000_000)
+        audio = make_format("140", "", 0, "mp4a", "m4a", 1_000_000)
+        selector.populate([video], [audio], [], [])
+
+        assert selector.get_selections()["download_mode"] == DOWNLOAD_MODE_VIDEO
+
+        selector.set_download_mode(DOWNLOAD_MODE_AUDIO)
+        assert selector.get_selections()["download_mode"] == DOWNLOAD_MODE_AUDIO
+    finally:
+        root.destroy()
+
+
+def test_audio_only_session_artifact_is_the_audio_file():
+    from src.gui.main_window import MainWindow
+
+    with __import__("tempfile").TemporaryDirectory() as directory:
+        from pathlib import Path
+        audio = Path(directory) / "clip.m4a"
+        audio.write_bytes(b"audio")
+        window = MainWindow.__new__(MainWindow)
+
+        assert window._find_downloaded(directory) == str(audio)
+
+
+def test_text_only_session_artifact_is_the_subtitle_file():
+    """A text-only download has no media file, so the sidecar is the result."""
+    from src.core.download_options import DOWNLOAD_MODE_TEXT
+    from src.gui.main_window import MainWindow
+
+    with __import__("tempfile").TemporaryDirectory() as directory:
+        from pathlib import Path
+        subtitle = Path(directory) / "clip.en.srt"
+        subtitle.write_bytes(b"1\n00:00:00,000 --> 00:00:01,000\nhi\n")
+        window = MainWindow.__new__(MainWindow)
+
+        assert window._find_downloaded(directory) == ""
+        assert window._find_result_file(directory, DOWNLOAD_MODE_TEXT) == str(subtitle)
+
+
+def test_video_mode_result_file_still_ignores_sidecars():
+    from src.core.download_options import DOWNLOAD_MODE_VIDEO
+    from src.gui.main_window import MainWindow
+
+    with __import__("tempfile").TemporaryDirectory() as directory:
+        from pathlib import Path
+        video = Path(directory) / "clip.mp4"
+        subtitle = Path(directory) / "clip.en.srt"
+        video.write_bytes(b"video")
+        subtitle.write_bytes(b"subtitle")
+        window = MainWindow.__new__(MainWindow)
+
+        assert window._find_result_file(directory, DOWNLOAD_MODE_VIDEO) == str(video)

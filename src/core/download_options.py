@@ -3,6 +3,16 @@ from typing import Iterable, Optional
 
 from src.core.models import FormatInfo
 
+DOWNLOAD_MODE_VIDEO = "video"
+DOWNLOAD_MODE_AUDIO = "audio"
+DOWNLOAD_MODE_TEXT = "text"
+
+DOWNLOAD_MODE_LABELS = {
+    DOWNLOAD_MODE_VIDEO: "Video (with audio)",
+    DOWNLOAD_MODE_AUDIO: "Audio only",
+    DOWNLOAD_MODE_TEXT: "Text only (subtitle / transcript)",
+}
+
 
 def _audio_matches_video_container(video: FormatInfo, audio: FormatInfo) -> bool:
     """Return whether an audio format can be merged into the video container."""
@@ -45,6 +55,34 @@ def resolve_audio_format_id(
     return best.format_id if best else None
 
 
+def resolve_best_audio_format_id(
+    audio_formats: Iterable[FormatInfo],
+) -> Optional[str]:
+    """Pick the highest-quality standalone audio track.
+
+    Ranking is by bitrate, then by file size. Among equally good candidates the
+    unprocessed track wins over YouTube's DRC variant, which is dynamic-range
+    compressed rather than the original audio.
+    """
+    available = list(audio_formats)
+    if not available:
+        return None
+
+    def rank(fmt: FormatInfo) -> tuple:
+        note = (fmt.format_note or "").lower()
+        is_drc = "drc" in note or fmt.format_id.lower().endswith("-drc")
+        # The DRC penalty outranks filesize: YouTube ships the DRC variant at
+        # the same bitrate but a slightly different byte count, so comparing
+        # size first would hand the win to whichever file happens to be bigger.
+        return (
+            fmt.abr or fmt.tbr or 0,
+            0 if is_drc else 1,
+            fmt.filesize or 0,
+        )
+
+    return max(available, key=rank).format_id
+
+
 def audio_format_by_id(
     formats: Iterable[FormatInfo], format_id: Optional[str]
 ) -> Optional[FormatInfo]:
@@ -72,8 +110,13 @@ def video_format_by_id(
 
 
 __all__ = [
+    "DOWNLOAD_MODE_AUDIO",
+    "DOWNLOAD_MODE_LABELS",
+    "DOWNLOAD_MODE_TEXT",
+    "DOWNLOAD_MODE_VIDEO",
     "audio_format_by_id",
     "resolve_audio_format_id",
+    "resolve_best_audio_format_id",
     "resolve_merge_format",
     "video_format_by_id",
 ]
