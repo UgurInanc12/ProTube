@@ -13,7 +13,7 @@ class ProTubeApp:
     """Main application class. Sets up window, theme, and FFmpeg check."""
 
     APP_NAME = "ProTube"
-    APP_VERSION = "0.1.0"
+    APP_VERSION = "0.2.0"
     WINDOW_WIDTH = 1100
     WINDOW_HEIGHT = 750
 
